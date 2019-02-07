@@ -1,0 +1,2592 @@
+; Aggregation modeling by diffusion-limited aggregation and DLVO
+; Code written by Thomas Ritschel in PureBasic 5.60
+
+
+Macro popall
+  
+  !sub rsp,64
+  !pop rbp
+  !pop rsi
+  !pop rdi
+  !pop r15
+  !pop r14
+  !pop r13
+  !pop r12
+  !pop rbx
+  
+EndMacro  
+
+Macro pushall
+  
+  !push rbx
+  !push r12
+  !push r13
+  !push r14
+  !push r15
+  !push rdi
+  !push rsi
+  !push rbp
+  !add rsp,64
+  
+EndMacro  
+
+;Some general Matrix operations 
+
+Procedure.b matrix_multi(Array inputmatrix1.d(2),Array inputmatrix2.d(2), Array outputmatrix.d(2),transpose1.b,transpose2.b)
+  
+  Protected temp.d
+  If transpose1:transpose1=1:EndIf
+  If transpose2:transpose2=1:EndIf
+  Protected trans1_inv.i=1-transpose1
+  Protected trans2_inv.i=1-transpose2
+  
+  If (Not ArraySize(inputmatrix1(),2-transpose1)=ArraySize(inputmatrix2(),1+transpose2)) Or (Not (ArraySize(outputmatrix(),1)=ArraySize(inputmatrix1(),1+transpose1) And ArraySize(outputmatrix(),2)=ArraySize(inputmatrix2(),2-transpose2))):ProcedureReturn 0:EndIf
+  
+  Protected x.i=ArraySize(inputmatrix1(),1+transpose1)
+  Protected y.i=ArraySize(inputmatrix2(),2-transpose2)
+  Protected z.i=ArraySize(inputmatrix1(),2-transpose1)
+  
+  node_a1.i
+  node_b1.i
+  node_a2.i
+  node_b2.i
+  node_ar.i
+  node_br.i
+
+  If transpose1:node_a1=(x+1)*8:node_a2=8:node_ar=((x+1)*(z+1))*8:Else:node_a1=8:node_a2=(z+1)*8:node_ar=(z+1)*8:EndIf
+  If transpose2
+    node_b1=8
+    node_b2=(z+1)*8
+    node_br=(z+1)*8
+
+  Else
+    node_b1=(y+1)*8
+    node_b2=8
+    node_br=((y+1)*(z+1))*8
+  EndIf
+  
+  *p1=@inputmatrix1()
+  *p2=@inputmatrix2()
+  *p3=@outputmatrix()
+  
+  pushall
+  !mov rsi,[p.p_p1]
+  !mov rax,[p.p_p2]
+  !mov rdi,[p.p_p3]
+  !mov r10,[p.v_node_a1]
+  !mov r11,[p.v_node_b1]
+  !mov r12,[p.v_node_a2]
+  !mov r13,[p.v_node_b2]
+  !mov r14,[p.v_node_ar]
+  !mov r15,[p.v_node_br]
+  
+  !mov rcx,[p.v_x]
+  !add rcx,1
+  !.s1:
+  !mov r8,rcx
+  !mov rcx,[p.v_y]
+  !add rcx,1
+  !.s2:
+  !mov r9,rcx
+  !mov rcx,[p.v_z]
+  !add rcx,1
+  !fldz
+  !.s3:  
+  !fld qword [rsi]
+  !fld qword [rax]
+  !fmulp
+  !faddp
+  !add rsi,r10
+  !add rax,r11
+  !sub rcx,1
+  !jnz .s3
+  !fstp qword [rdi]
+  !add rdi,8
+  !sub rsi,r14
+  !sub rax,r15
+  !add rax,r13
+  !mov rcx,r9
+  !sub rcx,1
+  !jnz .s2
+  !mov rax,[p.p_p2]
+  !add rsi,r12
+  !mov rcx,r8
+  !sub rcx,1
+  !jnz .s1
+  popall
+  
+  ProcedureReturn 1
+  
+EndProcedure 
+
+Procedure.b matrix_inv(Array inputmatrix.d(2),Array outputmatrix.d(2))
+
+  ;matrix inversion
+  Protected temp.d  
+  If Not ArraySize(inputmatrix(),1)=ArraySize(inputmatrix(),2):ProcedureReturn 0:EndIf
+  Protected x.i=ArraySize(inputmatrix(),1)
+  Protected Dim A.d(x,x)
+  Protected pivotzeile.l
+  CopyArray(inputmatrix(),A())
+  
+  For i=0 To x
+    For j=0 To x
+      outputmatrix(i,j)=0      
+    Next j
+    outputmatrix(i,i)=1
+  Next i
+  For i=0 To x-1
+    
+    temp=0
+    pivotzeile=i
+    For j=i To x
+      If Abs(A(j,i))>temp:temp=Abs(A(j,i)):pivotzeile=j:EndIf
+    Next j
+    If Not pivotzeile=i
+      ;Swap pivot(i),pivot(pivotzeile)
+      For j=0 To x
+        Swap A(i,j),A(pivotzeile,j)
+        Swap outputmatrix(i,j),outputmatrix(pivotzeile,j)
+      Next j  
+    EndIf 
+    
+    For j=i+1 To x
+      temp=A(j,i)/A(i,i)
+      For k=0 To x
+       A(j,k)-temp*A(i,k)
+      outputmatrix(j,k)-temp*outputmatrix(i,k)
+      Next k  
+    Next j  
+  Next i
+  
+  For i=x To 1 Step -1
+    For j=i-1 To 0 Step -1
+      temp=A(j,i)/A(i,i)
+       For k=x To 0 Step -1       
+          A(j,k)-temp*A(i,k)        
+        outputmatrix(j,k)-temp*outputmatrix(i,k)
+       Next k  
+    Next j  
+  Next i
+  
+  For i=0 To x
+    For j=0 To x
+      outputmatrix(i,j)/A(i,i)
+      If IsNAN(outputmatrix(i,j)):ProcedureReturn 0:EndIf
+    Next j  
+  Next i
+  
+  
+  ProcedureReturn 1
+  
+EndProcedure  
+
+Procedure.b pseudoinverse(Array inputmatrix.d(2),Array outputmatrix.d(2))
+    
+  Protected x=ArraySize(inputmatrix(),2)
+  Protected Dim temp.d(x,x)
+  If matrix_multi(inputmatrix(),inputmatrix(),temp(),1,0)
+    If matrix_inv(temp(),temp())
+      If matrix_multi(temp(),inputmatrix(),outputmatrix(),0,1) 
+  Else:ProcedureReturn 0:EndIf:Else:ProcedureReturn 0:EndIf:Else:ProcedureReturn 0:EndIf
+  
+ProcedureReturn 1
+
+EndProcedure 
+
+Prototype.d function_call(arg.d) 
+
+Procedure.d newtons_method(*function,init_guess.d)
+  
+  temp.d  
+  count.d
+  deriv.function_call=*function
+  alpha.d=1.00001
+  dx.d
+  first_deriv.d
+  second_deriv.d
+  temp=init_guess
+  Repeat
+    count+1
+    init_guess=temp
+    dx=init_guess*(alpha-1)
+    first_deriv=(deriv(init_guess+dx)-deriv(init_guess))/dx
+    second_deriv=(deriv(init_guess-dx)-2*deriv(init_guess)+deriv(init_guess+dx))/(dx*dx)    
+    temp=init_guess-first_deriv/second_deriv
+  Until Log10(Abs(1-temp/init_guess))<-20 Or count>30
+  ProcedureReturn temp
+  
+  EndProcedure
+  
+UsePNGImageEncoder()
+ExamineDesktops()
+
+;Definition of used structures
+
+Structure coordinates
+  x.i
+  y.i
+  z.i
+EndStructure  
+
+Structure xy
+  x.i
+  y.i
+EndStructure
+
+Structure xyd
+  x.d
+  y.d
+EndStructure   
+
+Structure hist
+  class.d
+  amount.i
+EndStructure
+
+;Particle Structure: An array of 3D Points defines its shape + some metainformation for convenience
+
+Structure particle
+  Array points.coordinates(0)
+  maxx.i    ;box defined by particle for more efficient collision check
+  minx.i
+  maxy.i
+  miny.i
+  maxz.i
+  minz.i
+  nr_points.i
+  id.i
+  mass.d
+  diameter.d  
+EndStructure  
+
+;Cluster Strcuture: A cluster is an array of particles that has certain properties (fractal-dimension, radius of gyration, diffusion coefficient, hydrodynamic diameter)
+
+Structure cluster
+  Array particles.particle(0)
+  maxx.i    ;box defined by cluster for more efficient collision check
+  minx.i
+  maxy.i
+  miny.i
+  maxz.i
+  minz.i
+  nr_particles.i
+  mass.d
+  diameter.d
+  fractal_dim.d
+  gyration.d
+  diff.d
+  hydrodyn.d
+EndStructure  
+
+Global Dim clusters.cluster(0)
+
+;Constants used for Gadget Handles
+
+Enumeration
+  #Win_Plot
+  #Win_Para
+  #Text_dx
+  #String_dx
+  #Text_nx
+  #Spin_nx
+  #Text_ny
+  #Spin_ny
+  #Text_nz
+  #Spin_nz
+  #Radio_DLA
+  #Radio_CCA
+  #Radio_DLACCA
+  #Radio_numbers
+  #Radio_volumes
+  #Radio_DLA_Point
+  #Radio_DLA_Face
+  #Radio_DLA_Edge
+  #Radio_DLA_Corner
+  #Text_Qz
+  #String_sphere_volfrac
+  #Spin_sphere_nr
+  #Spin_sphere_diameter
+  #Text_diameter
+  #Text_Length
+  #Text_Width
+  #Text_Thickness
+  #Text_rod_length
+  #Text_rod_diameter
+  #Text_Gt
+  #String_rod_volfrac
+  #Spin_rod_nr
+  #Spin_rod_length
+  #Spin_rod_diameter
+  #Text_Il
+  #Spin_plate_length
+  #Spin_plate_width
+  #Spin_plate_thickness
+  #String_plate_volfrac
+  #Spin_plate_nr
+  #Text_Qz_DLVO
+  #Text_Gt_DLVO
+  #Text_Il_DLVO
+  #Text_sphere_nr
+  #Text_rod_nr
+  #Text_plate_nr
+  #Text_hamaker
+  #Text_zetapot  
+  #String_sphere_hamaker
+  #String_rod_hamaker
+  #String_plate_hamaker
+  #String_sphere_zetapot
+  #String_rod_zetapot
+  #String_plate_zetapot
+  #Button_Start
+  #Frame_Grid
+  #Frame_Geometry
+  #Frame_Fractions
+  #Frame_DLVO_Parameters
+  #Frame_nucleus
+  #Text_Temperature
+  #String_Temperature
+  #Text_ionic_strength
+  #String_ionic_strength
+  #Checkbox_sediment
+    
+EndEnumeration  
+
+Global FPU_ControlWord.w=%0000001101111111
+!fstcw[v_FPU_ControlWord]
+
+Global im_aggregate.i
+Global im_DLVO.i
+
+;Drawing scale
+Global scale_x.d=1
+Global scale_y.d=1
+Global scale_z.d=0.2
+
+;dimensions of rod assuming cylindrical shape
+Global rod_diameter.i
+Global rod_length.i
+
+;dimensions of plate assuming rectangular shape
+Global plate_width.i
+Global plate_length.i
+Global plate_thickness.i
+
+;radius of sphere assuming spherical shape
+Global sphere_diameter.i
+
+Global sphere_nr.i
+Global rod_nr.i
+Global plate_nr.i
+Global sphere_vol.d
+Global rod_vol.d
+Global plate_vol.d   
+Global plate_gyration.d
+Global rod_gyration.d
+Global sphere_gyration.d
+
+Global sediment.b
+Global calculate_fractals.i
+Global calculate_gyration.i
+Global nr_clusters.i      
+Global elapsedtime.i
+Global roundmode.w=%0000011101111111
+Global FPU_ControlWord.w=%0000001101111111
+Global hugenumber.d=Pow(10,25)
+
+; Dimension of the numerical grid
+Global nx.i
+Global ny.i
+Global nz.i
+Global dx.d
+Global mode_dla.i
+Global mode.i
+Global mode_fraction.i
+
+Global chance_sum.i=chance_rod+chance_plate+chance_sphere
+
+Global e_charge.d=1.60217657E-19 ;Coulombs
+Global k_boltz.d=1.38065E-23     ;J/K
+Global temperature.d=298         ;Kelvin
+Global e_zero.d=8.854187E-12     ;F/m
+Global e_rel.d=80.1
+Global avogadro.d=6.02214129E+23  ;1/mol
+Global rod_zetapot.d     ;volts
+Global rod_hamaker.d=2.29E-20
+Global plate_zetapot.d  ;volts
+Global plate_hamaker.d=2.29E-20
+Global sphere_zetapot.d  ;volts
+Global sphere_hamaker.d=2.29E-20
+Global water_hamaker.d=3.7E-20
+
+Global Dim hamakers.d(3,3)
+Global Dim chances.d(3,3)
+Global Dim energies.d(3,3)
+
+Global ionic_strength.d=1 
+
+;definition of aggregate types follows
+
+Global sphere.particle
+sphere\id=1
+Global rod.particle
+rod\id=2
+Global plate.particle
+plate\id=3
+Global qz_gyr.d
+Global gt_gyr.d
+Global il_gyr.d
+
+Global time.d
+Global timestep.d
+Global largest_cluster.i
+Global nr_largest_cluster.i
+
+Global Dim masses.hist(0)
+Global Dim fractal_dims.hist(0)
+Global Dim gyration.hist(0)
+
+;DLVO curves
+
+Global Dim dlvo_sphere_sphere.d(1000)
+Global Dim dlvo_sphere_rod.d(1000)
+Global Dim dlvo_sphere_plate.d(1000)
+Global Dim dlvo_rod_rod.d(1000)
+Global Dim dlvo_rod_plate.d(1000)
+Global Dim dlvo_plate_plate.d(1000)
+
+;Field that saves position of clusters
+
+Global Dim field.b(0,0,0)
+Global Dim field_clusters.l(0,0,0)
+
+Procedure get_histograms()
+  
+  ;masses
+  Dim temp.d(0)
+  Dim masses.hist(0)
+  count=-1
+  For i=0 To nr_clusters
+    If Not clusters(i)\nr_particles=1
+      count+1
+      ReDim temp.d(count)
+      temp(count)=clusters(i)\mass  
+    EndIf
+  Next   
+  SortArray(temp(),#PB_Sort_Ascending)
+  count=-1
+  For i=0 To ArraySize(temp())
+    If i=0
+      count+1
+      ReDim masses.hist(count)
+      masses(count)\class=temp(i)
+    Else
+      If Not masses(count)\class=temp(i)
+        count+1
+        ReDim masses.hist(count)
+        masses(count)\class=temp(i)
+      EndIf  
+    EndIf     
+  Next i 
+  For j=0 To nr_clusters
+    For i=0 To ArraySize(masses())
+      If clusters(j)\mass=masses(i)\class:masses(i)\amount+masses(i)\class:EndIf
+    Next i  
+  Next
+  
+  ;   ;diameters
+  ;   Dim temp.d(0)
+  ;   Dim sizes.hist(0)
+  ;   count=-1
+  ;   For i=0 To nr_clusters
+  ;     If Not clusters(i)\nr_particles=1
+  ;     count+1
+  ;     ReDim temp.d(count)
+  ;     temp(count)=clusters(i)\diameter 
+  ;     EndIf
+  ;   Next   
+  ;   SortArray(temp(),#PB_Sort_Ascending)
+  ;   count=-1
+  ;   For i=0 To ArraySize(temp())
+  ;     If i=0
+  ;      count+1
+  ;      ReDim sizes.hist(count)
+  ;      sizes(count)\class=temp(i)
+  ;     Else
+  ;       If Not sizes(count)\class=temp(i)
+  ;         count+1
+  ;         ReDim sizes.hist(count)
+  ;         sizes(count)\class=temp(i)
+  ;       EndIf  
+  ;     EndIf     
+  ;   Next i 
+  ;   For j=0 To nr_clusters
+  ;     For i=0 To ArraySize(sizes())
+  ;       If clusters(j)\diameter=sizes(i)\class:sizes(i)\amount+clusters(j)\mass:EndIf
+  ;     Next i  
+  ;   Next  
+  
+  ;gyrationsd
+  Dim temp.d(0)
+  Dim gyration.hist(0)
+  count=-1
+  For i=0 To nr_clusters
+    If Not clusters(i)\nr_particles=1
+      count+1
+      ReDim temp.d(count)
+      temp(count)=clusters(i)\gyration 
+    EndIf
+  Next   
+  SortArray(temp(),#PB_Sort_Ascending)
+  count=-1
+  For i=0 To ArraySize(temp())
+    If i=0
+      count+1
+      ReDim gyration.hist(count)
+      gyration(count)\class=temp(i)
+    Else
+      If Not gyration(count)\class=temp(i)
+        count+1
+        ReDim gyration.hist(count)
+        gyration(count)\class=temp(i)
+      EndIf  
+    EndIf     
+  Next i 
+  For j=0 To nr_clusters
+    For i=0 To ArraySize(gyration())
+      If clusters(j)\gyration=gyration(i)\class:gyration(i)\amount+clusters(j)\mass:EndIf
+    Next i  
+  Next
+  
+  ;fractal dims
+  Dim temp.d(0)
+  Dim fractal_dims.hist(0)
+  count=-1
+  For i=0 To nr_clusters
+    If Not clusters(i)\nr_particles=1
+      count+1
+      ReDim temp.d(count)
+      temp(count)=clusters(i)\fractal_dim 
+    EndIf
+  Next   
+  SortArray(temp(),#PB_Sort_Ascending)
+  count=-1
+  For i=0 To ArraySize(temp())
+    If i=0
+      count+1
+      ReDim fractal_dims.hist(count)
+      fractal_dims(count)\class=temp(i)
+    Else
+      If Not fractal_dims(count)\class=temp(i)
+        count+1
+        ReDim fractal_dims.hist(count)
+        fractal_dims(count)\class=temp(i)
+      EndIf  
+    EndIf     
+  Next i 
+  For j=0 To nr_clusters
+    For i=0 To ArraySize(fractal_dims())
+      If Not clusters(j)\nr_particles=1
+        If clusters(j)\fractal_dim=fractal_dims(i)\class:fractal_dims(i)\amount+clusters(j)\mass:EndIf
+      EndIf  
+    Next i  
+  Next  
+  
+EndProcedure
+
+Procedure.d random_cont(max.d,significant_digits.i) ;creates a randomnumber from 0 to max
+  
+  result.d
+  exp.i=-Round(Log10(max),#PB_Round_Up)+significant_digits
+  range.i=Round(max*Pow(10,exp),#PB_Round_Down)
+  result=Random(range)/(Pow(10,exp))
+  ProcedureReturn result
+  
+EndProcedure  
+
+Procedure.b check_collision(*target.cluster) ;returns 1 if *target collides with clusters in the field
+  
+  *p1=@field()
+  particlesize=SizeOf(particle)
+  pointsize=SizeOf(coordinates)
+  size1=nz+1
+  size2=(nz+1)*(ny+1)
+  collision.i
+  pushall
+  !mov rax,[p.p_target]
+  !mov rbx,[p.p_p1]
+  !mov rdi,[rax]
+  !mov rcx,[rax+56]
+  !.loopbox:
+  !mov r15,[rdi+8]   ;test for out of box
+  !cmp r15,[v_nx]
+  !jg .collision
+  !mov r15,[rdi+16]
+  !cmp r15,0
+  !jl .collision
+  !mov r15,[rdi+24]
+  !cmp r15,[v_ny]
+  !jg .collision
+  !mov r15,[rdi+32]
+  !cmp r15,0
+  !jl .collision
+  !mov r15,[rdi+40]
+  !cmp r15,[v_nz]
+  !jg .collision
+  !mov r15,[rdi+48]
+  !cmp r15,0
+  !jl .collision 
+  !add rdi,[p.v_particlesize]
+  !sub rcx,1
+  !jnz .loopbox
+  !mov r14,[p.v_size1]
+  !mov r15,[p.v_size2]
+  !mov rdi,[rax]
+  !mov r8,[rax+56]  
+  !.loopparticles:
+  !mov r9,[rdi]
+  !mov r10,[rdi+56]
+  !.looppoints:
+  !mov r11,[r9]
+  !mov r12,[r9+8]
+  !mov r13,[r9+16]
+  !imul r11,r15
+  !imul r12,r14
+  !add r13,r11
+  !add r13,r12
+  !cmp byte [rbx+r13],0
+  !jne .collision  
+  !add r9,24
+  !sub r10,1
+  !jnz .looppoints   
+  !add rdi,[p.v_particlesize]
+  !sub r8,1
+  !jnz .loopparticles
+  !jmp .out
+  !.collision:
+  !mov qword [p.v_collision],1
+  !.out:
+  popall
+  
+  If collision:ProcedureReturn 1:EndIf
+  
+  ProcedureReturn 0
+  
+EndProcedure  
+
+Procedure rotate_cluster(*target.cluster,rot_mode.i)
+  
+  
+  ;mode=0  do not rotate
+  ;mode=1  rotate by 90 degrees around x
+  ;mode=2  rotate by -90 degrees around x
+  ;mode=3  rotate by 90 degrees around y
+  ;mode=4  rotate by -90 degrees around y
+  ;mode=5  rotate by 90 degrees around z
+  ;mode=6  rotate by -90 degrees around z
+  
+  ;first get centers of mass
+  cx.i
+  cy.i
+  cz.i
+  count.i
+  ;   temptarget.cluster
+  ;   CopyStructure(*target,@temptarget,cluster)
+  
+  For i=0 To ArraySize(*target\particles())
+    For j=0 To ArraySize(*target\particles(i)\points())
+      count+1
+      cx+*target\particles(i)\points(j)\x
+      cy+*target\particles(i)\points(j)\y
+      cz+*target\particles(i)\points(j)\z
+    Next   
+  Next 
+  ;to randomize center of mass if center is not at cell 
+  test=(cx%count)
+  cx=Round(cx/count,#PB_Round_Down)
+  If Random_cont(1,6)<test/count:cx+1:EndIf
+  test=(cy%count)
+  cy=Round(cy/count,#PB_Round_Down)
+  If Random_cont(1,6)<test/count:cy+1:EndIf
+  test=(cz%count)
+  cz=Round(cz/count,#PB_Round_Down)
+  If Random_cont(1,6)<test/count:cz+1:EndIf
+  
+  Select rot_mode
+      
+    Case 1    
+      For i=0 To ArraySize(*target\particles())
+        For j=0 To ArraySize(*target\particles(i)\points())
+          temp=*target\particles(i)\points(j)\y
+          *target\particles(i)\points(j)\y=-*target\particles(i)\points(j)\z+cz+cy
+          *target\particles(i)\points(j)\z=-cy+temp+cz
+        Next
+      Next
+    Case 2    
+      For i=0 To ArraySize(*target\particles())
+        For j=0 To ArraySize(*target\particles(i)\points())
+          temp=*target\particles(i)\points(j)\y
+          *target\particles(i)\points(j)\y=*target\particles(i)\points(j)\z-cz+cy
+          *target\particles(i)\points(j)\z=cy-temp+cz
+        Next
+      Next
+    Case 3
+      For i=0 To ArraySize(*target\particles())
+        For j=0 To ArraySize(*target\particles(i)\points())
+          temp=*target\particles(i)\points(j)\x
+          *target\particles(i)\points(j)\x=*target\particles(i)\points(j)\z-cz+cx
+          *target\particles(i)\points(j)\z=cx-temp+cz
+        Next
+      Next
+    Case 4  
+      For i=0 To ArraySize(*target\particles())
+        For j=0 To ArraySize(*target\particles(i)\points())
+          temp=*target\particles(i)\points(j)\x
+          *target\particles(i)\points(j)\x=-*target\particles(i)\points(j)\z+cz+cx
+          *target\particles(i)\points(j)\z=-cx+temp+cz
+        Next
+      Next
+    Case 5
+      For i=0 To ArraySize(*target\particles())
+        For j=0 To ArraySize(*target\particles(i)\points())
+          temp=*target\particles(i)\points(j)\x
+          *target\particles(i)\points(j)\x=*target\particles(i)\points(j)\y-cy+cx
+          *target\particles(i)\points(j)\y=cx-temp+cy
+        Next
+      Next
+    Case 6
+      For i=0 To ArraySize(*target\particles())
+        For j=0 To ArraySize(*target\particles(i)\points())
+          temp=*target\particles(i)\points(j)\x
+          *target\particles(i)\points(j)\x=-*target\particles(i)\points(j)\y+cy+cx
+          *target\particles(i)\points(j)\y=-cx+temp+cy
+        Next
+      Next
+  EndSelect    
+  
+  *target\maxx=0
+  *target\maxy=0
+  *target\maxz=0
+  *target\minx=nx
+  *target\miny=ny
+  *target\minz=nz
+  For i=0 To ArraySize(*target\particles())
+    For j=0 To ArraySize(*target\particles(i)\points())
+      If *target\particles(i)\points(j)\x>*target\maxx:*target\maxx=*target\particles(i)\points(j)\x:EndIf
+      If *target\particles(i)\points(j)\y>*target\maxy:*target\maxy=*target\particles(i)\points(j)\y:EndIf
+      If *target\particles(i)\points(j)\z>*target\maxz:*target\maxz=*target\particles(i)\points(j)\z:EndIf
+      If *target\particles(i)\points(j)\x<*target\minx:*target\minx=*target\particles(i)\points(j)\x:EndIf
+      If *target\particles(i)\points(j)\y<*target\miny:*target\miny=*target\particles(i)\points(j)\y:EndIf
+      If *target\particles(i)\points(j)\z<*target\minz:*target\minz=*target\particles(i)\points(j)\z:EndIf
+    Next
+  Next
+  
+  For i=0 To ArraySize(*target\particles())
+    *target\particles(i)\minx=nx
+    *target\particles(i)\maxx=0
+    *target\particles(i)\miny=ny
+    *target\particles(i)\maxy=0
+    *target\particles(i)\minz=nz
+    *target\particles(i)\maxz=0
+    For j=0 To ArraySize(*target\particles(i)\points())
+      If *target\particles(i)\points(j)\x>*target\particles(i)\maxx:*target\particles(i)\maxx=*target\particles(i)\points(j)\x:EndIf
+      If *target\particles(i)\points(j)\y>*target\particles(i)\maxy:*target\particles(i)\maxy=*target\particles(i)\points(j)\y:EndIf
+      If *target\particles(i)\points(j)\z>*target\particles(i)\maxz:*target\particles(i)\maxz=*target\particles(i)\points(j)\z:EndIf
+      If *target\particles(i)\points(j)\x<*target\particles(i)\minx:*target\particles(i)\minx=*target\particles(i)\points(j)\x:EndIf
+      If *target\particles(i)\points(j)\y<*target\particles(i)\miny:*target\particles(i)\miny=*target\particles(i)\points(j)\y:EndIf
+      If *target\particles(i)\points(j)\z<*target\particles(i)\minz:*target\particles(i)\minz=*target\particles(i)\points(j)\z:EndIf
+    Next   
+  Next   
+  ;   EndIf  
+  
+  If check_collision(*target)
+    
+    Select rot_mode
+        
+      Case 2    
+        For i=0 To ArraySize(*target\particles())
+          For j=0 To ArraySize(*target\particles(i)\points())
+            temp=*target\particles(i)\points(j)\y
+            *target\particles(i)\points(j)\y=-*target\particles(i)\points(j)\z+cz+cy
+            *target\particles(i)\points(j)\z=-cy+temp+cz
+          Next
+        Next
+      Case 1    
+        For i=0 To ArraySize(*target\particles())
+          For j=0 To ArraySize(*target\particles(i)\points())
+            temp=*target\particles(i)\points(j)\y
+            *target\particles(i)\points(j)\y=*target\particles(i)\points(j)\z-cz+cy
+            *target\particles(i)\points(j)\z=cy-temp+cz
+          Next
+        Next
+      Case 4
+        For i=0 To ArraySize(*target\particles())
+          For j=0 To ArraySize(*target\particles(i)\points())
+            temp=*target\particles(i)\points(j)\x
+            *target\particles(i)\points(j)\x=*target\particles(i)\points(j)\z-cz+cx
+            *target\particles(i)\points(j)\z=cx-temp+cz
+          Next
+        Next
+      Case 3  
+        For i=0 To ArraySize(*target\particles())
+          For j=0 To ArraySize(*target\particles(i)\points())
+            temp=*target\particles(i)\points(j)\x
+            *target\particles(i)\points(j)\x=-*target\particles(i)\points(j)\z+cz+cx
+            *target\particles(i)\points(j)\z=-cx+temp+cz
+          Next
+        Next
+      Case 6
+        For i=0 To ArraySize(*target\particles())
+          For j=0 To ArraySize(*target\particles(i)\points())
+            temp=*target\particles(i)\points(j)\x
+            *target\particles(i)\points(j)\x=*target\particles(i)\points(j)\y-cy+cx
+            *target\particles(i)\points(j)\y=cx-temp+cy
+          Next
+        Next
+      Case 5
+        For i=0 To ArraySize(*target\particles())
+          For j=0 To ArraySize(*target\particles(i)\points())
+            temp=*target\particles(i)\points(j)\x
+            *target\particles(i)\points(j)\x=-*target\particles(i)\points(j)\y+cy+cx
+            *target\particles(i)\points(j)\y=-cx+temp+cy
+          Next
+        Next
+    EndSelect    
+    
+    *target\maxx=0
+    *target\maxy=0
+    *target\maxz=0
+    *target\minx=nx
+    *target\miny=ny
+    *target\minz=nz
+    For i=0 To ArraySize(*target\particles())
+      For j=0 To ArraySize(*target\particles(i)\points())
+        If *target\particles(i)\points(j)\x>*target\maxx:*target\maxx=*target\particles(i)\points(j)\x:EndIf
+        If *target\particles(i)\points(j)\y>*target\maxy:*target\maxy=*target\particles(i)\points(j)\y:EndIf
+        If *target\particles(i)\points(j)\z>*target\maxz:*target\maxz=*target\particles(i)\points(j)\z:EndIf
+        If *target\particles(i)\points(j)\x<*target\minx:*target\minx=*target\particles(i)\points(j)\x:EndIf
+        If *target\particles(i)\points(j)\y<*target\miny:*target\miny=*target\particles(i)\points(j)\y:EndIf
+        If *target\particles(i)\points(j)\z<*target\minz:*target\minz=*target\particles(i)\points(j)\z:EndIf
+      Next
+    Next
+    
+    For i=0 To ArraySize(*target\particles())
+      *target\particles(i)\minx=nx
+      *target\particles(i)\maxx=0
+      *target\particles(i)\miny=ny
+      *target\particles(i)\maxy=0
+      *target\particles(i)\minz=nz
+      *target\particles(i)\maxz=0
+      For j=0 To ArraySize(*target\particles(i)\points())
+        If *target\particles(i)\points(j)\x>*target\particles(i)\maxx:*target\particles(i)\maxx=*target\particles(i)\points(j)\x:EndIf
+        If *target\particles(i)\points(j)\y>*target\particles(i)\maxy:*target\particles(i)\maxy=*target\particles(i)\points(j)\y:EndIf
+        If *target\particles(i)\points(j)\z>*target\particles(i)\maxz:*target\particles(i)\maxz=*target\particles(i)\points(j)\z:EndIf
+        If *target\particles(i)\points(j)\x<*target\particles(i)\minx:*target\particles(i)\minx=*target\particles(i)\points(j)\x:EndIf
+        If *target\particles(i)\points(j)\y<*target\particles(i)\miny:*target\particles(i)\miny=*target\particles(i)\points(j)\y:EndIf
+        If *target\particles(i)\points(j)\z<*target\particles(i)\minz:*target\particles(i)\minz=*target\particles(i)\points(j)\z:EndIf
+      Next   
+    Next 
+    
+    
+  EndIf  
+  
+EndProcedure  
+
+Procedure move_cluster(*target.cluster) ;random move of cluster drawing uniformly from (-1,0,1) in each direction
+  
+  ;   rx=2*Random(1)-1   ;causes checkerboarding
+  ;   ry=2*Random(1)-1
+  ;   rz=2*Random(1)-1
+  ;   
+  
+  rx=Random(2)-1   
+  ry=Random(2)-1
+  rz=Random(2)-1
+  
+  ;   temp.cluster
+  ;   CopyStructure(*target,@temp,cluster)
+  For i=0 To ArraySize(*target\particles())
+    For j=0 To ArraySize(*target\particles(i)\points())
+      *target\particles(i)\points(j)\x+rx
+      *target\particles(i)\points(j)\y+ry
+      *target\particles(i)\points(j)\z+rz
+    Next   
+  Next   
+ 
+  *target\maxx+rx
+  *target\minx+rx
+  *target\maxy+ry
+  *target\miny+ry
+  *target\maxz+rz
+  *target\minz+rz
+  
+  For i=0 To ArraySize(*target\particles())
+    *target\particles(i)\maxx+rx
+    *target\particles(i)\minx+rx
+    *target\particles(i)\maxy+ry
+    *target\particles(i)\miny+ry
+    *target\particles(i)\maxz+rz
+    *target\particles(i)\minz+rz
+  Next 
+  
+  If check_collision(*target)
+    
+    For i=0 To ArraySize(*target\particles())
+      For j=0 To ArraySize(*target\particles(i)\points())
+        *target\particles(i)\points(j)\x-rx
+        *target\particles(i)\points(j)\y-ry
+        *target\particles(i)\points(j)\z-rz
+      Next   
+    Next   
+    
+    *target\maxx-rx
+    *target\minx-rx
+    *target\maxy-ry
+    *target\miny-ry
+    *target\maxz-rz
+    *target\minz-rz
+    
+    For i=0 To ArraySize(*target\particles())
+      *target\particles(i)\maxx-rx
+      *target\particles(i)\minx-rx
+      *target\particles(i)\maxy-ry
+      *target\particles(i)\miny-ry
+      *target\particles(i)\maxz-rz
+      *target\particles(i)\minz-rz
+    Next 
+    
+    
+  EndIf  
+  
+  ;   EndIf  
+EndProcedure  
+
+Procedure.i merge_clusters(a.i,b.i) ;merges cluster b into cluster a (a=a+b)
+  
+  temp.d
+  count.i
+  
+  If clusters(b)\maxx>clusters(a)\maxx:clusters(a)\maxx=clusters(b)\maxx:EndIf
+  If clusters(b)\maxy>clusters(a)\maxy:clusters(a)\maxy=clusters(b)\maxy:EndIf
+  If clusters(b)\maxz>clusters(a)\maxz:clusters(a)\maxz=clusters(b)\maxz:EndIf
+  If clusters(b)\minx<clusters(a)\minx:clusters(a)\minx=clusters(b)\minx:EndIf
+  If clusters(b)\miny<clusters(a)\miny:clusters(a)\miny=clusters(b)\miny:EndIf
+  If clusters(b)\minz<clusters(a)\minz:clusters(a)\minz=clusters(b)\minz:EndIf
+  max=clusters(a)\maxx-clusters(a)\minx
+  If clusters(a)\maxy-clusters(a)\miny>max:max=clusters(a)\maxy-clusters(a)\miny:EndIf
+  If clusters(a)\maxz-clusters(a)\minz>max:max=clusters(a)\maxz-clusters(a)\minz:EndIf
+  clusters(a)\diameter=dx*(max+1)
+  clusters(a)\mass+clusters(b)\mass
+  clusters(a)\nr_particles+clusters(b)\nr_particles
+  a_parts=ArraySize(clusters(a)\particles())
+  For i=0 To ArraySize(clusters(b)\particles())
+    a_parts+1
+    ReDim clusters(a)\particles.particle(a_parts)
+    CopyStructure(@clusters(b)\particles(i),@clusters(a)\particles(a_parts),particle)
+  Next i
+  
+  
+  
+  If b<nr_clusters
+    CopyStructure(@clusters(nr_clusters),@clusters(b),cluster)
+    For j=0 To ArraySize(clusters(b)\particles())
+      For k=0 To ArraySize(clusters(b)\particles(j)\points())
+        field_clusters(clusters(b)\particles(j)\points(k)\x,clusters(b)\particles(j)\points(k)\y,clusters(b)\particles(j)\points(k)\z)=b+1
+      Next k  
+    Next j
+  EndIf
+  If a=nr_clusters:a=b:EndIf
+  nr_clusters-1
+  ReDim clusters.cluster(nr_clusters)
+  
+  If calculate_gyration
+    Dim centers.d(3)
+    count.i    
+    
+    For i=0 To ArraySize(clusters(a)\particles())
+      For j=0 To ArraySize(clusters(a)\particles(i)\points())
+        count+1
+        centers(0)+clusters(a)\particles(i)\points(j)\x
+        centers(1)+clusters(a)\particles(i)\points(j)\y
+        centers(2)+clusters(a)\particles(i)\points(j)\z
+      Next   
+    Next 
+    centers(0)/count
+    centers(1)/count
+    centers(2)/count
+    
+    temp=0
+    For i=0 To ArraySize(clusters(a)\particles())
+      For j=0 To ArraySize(clusters(a)\particles(i)\points())
+        temp+Pow(clusters(a)\particles(i)\points(j)\x-centers(0),2)
+        temp+Pow(clusters(a)\particles(i)\points(j)\y-centers(1),2)
+        temp+Pow(clusters(a)\particles(i)\points(j)\z-centers(2),2)
+      Next   
+    Next
+    
+    clusters(a)\gyration=Sqr(temp/count)*dx
+    
+  EndIf
+  
+  If calculate_fractals
+    
+    
+    Dim fractal.xyd(0)
+    count=-1
+    size.i=clusters(a)\diameter/dx/5
+    
+    While size>1 And it_depth<4   ;box counting
+      it_depth+1
+      
+      count+1
+      ReDim fractal.xyd(count)
+      fractal(count)\x=size
+      boxes=Round(clusters(a)\diameter/dx/size,#PB_Round_Up)
+      
+      *p1=@clusters(a)
+      particlesize=SizeOf(particle)
+      pointsize=SizeOf(coordinates)
+      res.i
+      
+      pushall
+      !xor rbx,rbx
+      !mov rax,[p.p_p1]    
+      !mov r8,[p.v_boxes]  
+      !mov r11,[rax+16]
+      !.xloop:
+      !mov r9,[p.v_boxes]
+      !mov r12,[rax+32]
+      !.yloop:
+      !mov r10,[p.v_boxes]
+      !mov r13,[rax+48]
+      !.zloop:
+      !mov rdx,[rax]
+      !mov rcx,[rax+56]
+      !.particleloop:
+      !mov rsi,[rdx]
+      !mov rdi,[rdx+56]
+      !.pointloop:
+      !mov r14,[rsi]
+      !cmp r14,r11
+      !jl .outpoint 
+      !sub r14,[p.v_size]
+      !cmp r14,r11
+      !jge .outpoint
+      !mov r14,[rsi+8]
+      !cmp r14,r12
+      !jl .outpoint 
+      !sub r14,[p.v_size]
+      !cmp r14,r12
+      !jge .outpoint
+      !mov r14,[rsi+16]
+      !cmp r14,r13
+      !jl .outpoint 
+      !sub r14,[p.v_size]
+      !cmp r14,r13
+      !jge .outpoint
+      !add rbx,1
+      !jmp .outbox
+      !.outpoint:
+      !add rsi,[p.v_pointsize]
+      !sub rdi,1
+      !jnz .pointloop    
+      !add rdx,[p.v_particlesize]
+      !sub rcx,1
+      !jnz .particleloop
+      !.outbox:
+      !add r13,[p.v_size]
+      !sub r10,1
+      !jnz .zloop    
+      !add r12,[p.v_size]
+      !sub r9,1
+      !jnz .yloop    
+      !add r11,[p.v_size]
+      !sub r8,1
+      !jnz .xloop
+      !mov qword [p.v_res],rbx
+      popall
+      
+      fractal(count)\y=res
+      
+      If Round(0.7*size,#PB_Round_Up)<size
+        size=Round(0.7*size,#PB_Round_Up) 
+      Else
+        size-1
+      EndIf  
+    Wend ;0.05*clusters(a)\diameter/dx
+    If size<=1
+      clusters(a)\fractal_dim=3
+      
+    Else  
+      ;   Debug res
+      ;   Debug test
+      ;   CallDebugger
+      
+      ;Debug "start"
+      For i=0 To count
+        fractal(i)\x=Log10(fractal(i)\x)
+        ; Debug fractal(i)\x
+      Next i
+      ;Debug "----"
+      For i=0 To count
+        fractal(i)\y=Log10(fractal(i)\y)
+        ; Debug fractal(i)\y
+      Next i
+      
+      
+      delta.d=1.0001  ;levenberg marquardt fit
+      lambda.d=0.001   
+      ssr.d
+      iterationstiefe=0
+      Dim parameters.d(1)
+      parameters(0)=fractal(count)\y
+      parameters(1)=-3
+      Repeat
+        iterationstiefe+1
+        Dim ableitungen.d(2,count)
+        Dim ergebnisvektor.d(1,0)
+        Dim J.d(count,1)
+        Dim J_invers.d(1,count)
+        Dim Q_vektor.d(count,0)
+        Dim JTJ.d(1,1)
+        Dim JTJ_invers.d(1,1)
+        For i=0 To count
+          ableitungen(2,i)=parameters(0)+parameters(1)*fractal(i)\x;Pow(fractal(i)\x,parameters(1))
+        Next i       
+        ssr=0
+        For i=0 To count
+          ssr+Pow(ableitungen(2,i)-fractal(i)\y,2)
+        Next i  
+        
+        For i=0 To count
+          ableitungen(0,i)=parameters(0)*delta+fractal(i)\x*parameters(1);*Pow(fractal(i)\x,parameters(1))
+          ableitungen(1,i)=parameters(0)+delta*fractal(i)\x*parameters(1);*Pow(fractal(i)\x,parameters(1)*delta)
+        Next i 
+        
+        For i=0 To count
+          J(i,0)=(ableitungen(0,i)-ableitungen(2,i))/(((delta-1)*parameters(0)))
+          J(i,1)=(ableitungen(1,i)-ableitungen(2,i))/(((delta-1)*parameters(1)))
+          Q_vektor(i,0)=fractal(i)\y-ableitungen(2,i)
+        Next i 
+        
+        matrix_multi(J(),J(),JTJ(),1,0)
+        
+        For i=0 To 1
+          JTJ(i,i)+lambda
+        Next i
+        
+        matrix_inv(JTJ(),JTJ_invers())
+        matrix_multi(JTJ_invers(),J(),J_invers(),0,1)
+        matrix_multi(J_invers(),Q_vektor(),ergebnisvektor(),0,0)
+        parameters(0)+ergebnisvektor(0,0)
+        parameters(1)+ergebnisvektor(1,0) 
+        temp=ssr
+        ssr=0
+        For i=0 To count
+          ableitungen(2,i)=parameters(0)+fractal(i)\x*parameters(1);Pow(fractal(i)\x,parameters(1))
+          ssr+Pow(ableitungen(2,i)-fractal(i)\y,2)
+        Next i
+        If Not ssr<temp
+          parameters(0)-ergebnisvektor(0,0)
+          parameters(1)-ergebnisvektor(1,0)       
+          lambda*100
+          ok=0
+        Else
+          lambda/10
+          ok=1
+        EndIf  
+      Until iterationstiefe=100 Or (temp/ssr<1.00000001 And ok) Or lambda>Pow(10,15)
+      If Not IsNAN(parameters(1)):clusters(a)\fractal_dim=-parameters(1):EndIf
+      If clusters(a)\fractal_dim<=1.2:clusters(a)\fractal_dim=1.2:EndIf
+    EndIf
+  EndIf
+  
+  If calculate_fractals And calculate_gyration
+    
+    clusters(a)\hydrodyn=2*clusters(a)\gyration*(1-1/clusters(a)\fractal_dim)*Sqr(2/clusters(a)\fractal_dim+1)
+    clusters(a)\diff=k_boltz*temperature/(6*#PI*0.001*clusters(a)\hydrodyn)
+    
+  EndIf  
+  
+  If clusters(a)\mass>largest_cluster
+    largest_cluster=clusters(a)\mass
+    nr_largest_cluster=a
+  EndIf  
+  
+EndProcedure  
+
+Procedure.i check_attachment(*target.cluster,index.i) ;returns the  index of the value to which *target cluster attaches after the energy barrier is passed 
+  
+  *p1=@field()
+  particlesize=SizeOf(particle)
+  pointsize=SizeOf(coordinates)
+  For i=0 To ArraySize(*target\particles())
+    For j=0 To ArraySize(*target\particles(i)\points())
+      x.i=*target\particles(i)\points(j)\x
+      y.i=*target\particles(i)\points(j)\y
+      z.i=*target\particles(i)\points(j)\z
+      If Not x>=nx  
+        If field(x+1,y,z) And Not field_clusters(x+1,y,z)=index And Not (mode=1 And Not field_clusters(x+1,y,z)=1)
+          If random_cont(1,18)<chances(*target\particles(i)\id,field(x+1,y,z))
+            ProcedureReturn field_clusters(x+1,y,z)
+          EndIf  
+        EndIf
+      EndIf
+      If Not x<=0
+        If field(x-1,y,z) And Not field_clusters(x-1,y,z)=index And Not (mode=1 And Not field_clusters(x-1,y,z)=1)
+          If random_cont(1,18)<chances(*target\particles(i)\id,field(x-1,y,z))
+            ProcedureReturn field_clusters(x-1,y,z)
+          EndIf  
+        EndIf
+      EndIf
+      If Not y>=ny
+        If field(x,y+1,z) And Not field_clusters(x,y+1,z)=index And Not (mode=1 And Not field_clusters(x,y+1,z)=1)
+          If random_cont(1,18)<chances(*target\particles(i)\id,field(x,y+1,z))
+            ProcedureReturn field_clusters(x,y+1,z)
+          EndIf  
+        EndIf
+      EndIf
+      If Not y<=0
+        If field(x,y-1,z) And Not field_clusters(x,y-1,z)=index And Not (mode=1 And Not field_clusters(x,y-1,z)=1)
+          If random_cont(1,18)<chances(*target\particles(i)\id,field(x,y-1,z))
+            ProcedureReturn field_clusters(x,y-1,z)
+          EndIf  
+        EndIf
+      EndIf
+      If Not z>=nz
+        If field(x,y,z+1) And Not field_clusters(x,y,z+1)=index And Not (mode=1 And Not field_clusters(x,y,z+1)=1)
+          If random_cont(1,18)<chances(*target\particles(i)\id,field(x,y,z+1))
+            ProcedureReturn field_clusters(x,y,z+1)
+          EndIf  
+        EndIf
+      EndIf
+      If Not z<=0
+        If field(x,y,z-1) And Not field_clusters(x,y,z-1)=index And Not (mode=1 And Not field_clusters(x,y,z-1)=1)
+          If random_cont(1,18)<chances(*target\particles(i)\id,field(x,y,z-1))
+            ProcedureReturn field_clusters(x,y,z-1)
+          EndIf  
+        EndIf
+      EndIf
+    Next j
+  Next i  
+  
+  ProcedureReturn 0
+  
+EndProcedure  
+
+Procedure set_mineral_shapes() ;set minerals according to user input
+  
+  ;   ClearList(plate())
+  ;   ClearList(rod())
+  ;   ClearList(sphere())
+  count=-1
+  For i=0 To plate_length:For j=0 To plate_width:For k=0 To plate_thickness
+        count+1
+        ReDim plate\points.coordinates(count)
+        
+        plate\points(count)\x=i
+        plate\points(count)\y=j
+        plate\points(count)\z=k
+  Next k:Next j:Next i
+  plate\maxx=plate_length
+  plate\maxy=plate_width
+  plate\maxz=plate_thickness
+  
+  max=0
+  If plate_length>max:max=plate_length:EndIf
+  If plate_width>max:max=plate_width:EndIf
+  If plate_thickness>max:max=plate_thickness:EndIf
+  plate\diameter=dx*(max+1)
+  
+  count=-1
+  For j=0 To rod_diameter:For k=0 To rod_diameter
+      a=j-(rod_diameter+1)/2
+      b=k-(rod_diameter+1)/2
+      If Sqr(a*a+b*b)<=(rod_diameter+1)/2
+        For i=0 To rod_length
+          count+1
+          ReDim rod\points.coordinates(count)
+          rod\points(count)\x=i
+          rod\points(count)\y=j
+          rod\points(count)\z=k
+        Next i
+      EndIf
+  Next k:Next j
+  rod\maxx=rod_length
+  rod\maxy=rod_diameter
+  rod\maxz=rod_diameter
+  
+  max=0
+  If rod_length>max:max=rod_length:EndIf
+  If rod_diameter>max:max=rod_diameter:EndIf
+  rod\diameter=dx*(max+1)
+  
+  count=-1
+  For i=0 To sphere_diameter:For j=0 To sphere_diameter:For k=0 To sphere_diameter
+        a=i-(sphere_diameter+1)/2
+        b=j-(sphere_diameter+1)/2
+        c=k-(sphere_diameter+1)/2
+        If (a*a+b*b+c*c)<=(sphere_diameter+1)*(sphere_diameter+1)/4; And Sqr(a*a+b*b+c*c)>=qz_size-2        
+          count+1
+          ReDim sphere\points.coordinates(count)
+          sphere\points(count)\x=i
+          sphere\points(count)\y=j
+          sphere\points(count)\z=k
+        EndIf
+  Next k:Next j:Next i
+  
+  sphere\maxx=sphere_diameter
+  sphere\maxy=sphere_diameter
+  sphere\maxz=sphere_diameter
+  
+  sphere\diameter=dx*(sphere_diameter+1)
+  sphere\mass=ArraySize(sphere\points())+1
+  rod\mass=ArraySize(rod\points())+1
+  plate\mass=ArraySize(plate\points())+1
+  sphere\nr_points=ArraySize(sphere\points())+1
+  rod\nr_points=ArraySize(rod\points())+1
+  plate\nr_points=ArraySize(plate\points())+1
+  
+  sphere_gyration=(sphere_diameter+1)*dx/2*Sqr(3/5)
+  
+  temp.d=0
+  count=0 
+
+  Dim centers.d(2)
+  For j=0 To ArraySize(rod\points()) 
+    count+1
+    centers(0)+rod\points(j)\x
+    centers(1)+rod\points(j)\y
+    centers(2)+rod\points(j)\z
+  Next   
+  
+  centers(0)/count
+  centers(1)/count
+  centers(2)/count
+  
+  temp=0
+  
+  For j=0 To ArraySize(rod\points()) 
+    temp+Pow(rod\points(j)\x-centers(0),2)
+    temp+Pow(rod\points(j)\y-centers(1),2)
+    temp+Pow(rod\points(j)\z-centers(2),2)
+  Next   
+  
+  rod_gyration=Sqr(temp/count)*dx
+    
+  temp.d=0
+  count=0 
+  
+  Dim centers.d(2)
+  For j=0 To ArraySize(plate\points()) 
+    count+1
+    centers(0)+plate\points(j)\x
+    centers(1)+plate\points(j)\y
+    centers(2)+plate\points(j)\z
+  Next   
+  
+  centers(0)/count
+  centers(1)/count
+  centers(2)/count
+  
+  For j=0 To ArraySize(plate\points()) 
+    temp+Pow(plate\points(j)\x-centers(0),2)
+    temp+Pow(plate\points(j)\y-centers(1),2)
+    temp+Pow(plate\points(j)\z-centers(2),2)
+  Next   
+  plate_gyration=Sqr(temp/count)*dx
+  
+EndProcedure  
+
+Procedure init_field() ; initialize numerical grid with randomly distributed clusters
+  
+  FreeArray(field())
+  ram.q=MemoryStatus(#PB_System_FreePhysical)
+  If (nx+1)*(ny+1)*(nz+1)*6>ram:MessageRequester("Warning","Out of Memory, Reduce Grid Size",#PB_MessageRequester_Ok):End:EndIf
+  Global Dim field.b(nx,ny,nz)
+  
+  FreeArray(field_clusters())
+  Global Dim field_clusters.l(nx,ny,nz)
+  nr_clusters=-1
+  If mode=1 Or mode=3     ;DLA mode
+    clusters(0)\diff=0
+    nr_clusters+1
+    Select mode_dla
+      Case 1
+        clusters(0)\particles(0)\points(0)\x=nx/2
+        clusters(0)\particles(0)\points(0)\y=ny/2 
+        clusters(0)\particles(0)\points(0)\z=nz/2 
+        clusters(0)\particles(0)\minx=nx/2
+        clusters(0)\particles(0)\maxx=nx/2
+        clusters(0)\particles(0)\miny=ny/2
+        clusters(0)\particles(0)\maxy=ny/2
+        clusters(0)\particles(0)\minz=nz/2
+        clusters(0)\particles(0)\maxz=nz/2
+        clusters(0)\nr_particles=1
+        clusters(0)\particles(0)\nr_points=1
+        clusters(0)\diameter=dx
+        clusters(0)\particles(0)\id=2
+        clusters(0)\fractal_dim=3
+        clusters(0)\mass=1
+        clusters(0)\minx=nx/2
+        clusters(0)\maxx=nx/2
+        clusters(0)\miny=ny/2
+        clusters(0)\maxy=ny/2
+        clusters(0)\minz=nz/2
+        clusters(0)\maxz=nz/2
+        field(nx/2,ny/2,nz/2)=1
+        field_clusters(nx/2,ny/2,nz/2)=1
+      Case 2
+        clusters(0)\particles(0)\nr_points=(nz+1)*(ny+1)
+        ReDim clusters(0)\particles(0)\points.coordinates((nz+1)*(ny+1)-1)
+        For k=0 To nz:For j=0 To ny
+            
+            clusters(0)\particles(0)\points(k+nz*j)\x=0
+            clusters(0)\particles(0)\points(k+nz*j)\y=j 
+            clusters(0)\particles(0)\points(k+nz*j)\z=k 
+            field(0,j,k)=1
+            field_clusters(0,j,k)=1
+        Next j:Next k
+        clusters(0)\particles(0)\minx=0
+        clusters(0)\particles(0)\maxx=0
+        clusters(0)\particles(0)\miny=0
+        clusters(0)\particles(0)\maxy=ny
+        clusters(0)\particles(0)\minz=0
+        clusters(0)\particles(0)\maxz=nz
+        clusters(0)\nr_particles=1
+        clusters(0)\diameter=dx*nx
+        clusters(0)\particles(0)\id=1
+        clusters(0)\fractal_dim=3
+        clusters(0)\mass=(nx+1)*(ny+1)
+        clusters(0)\minx=0
+        clusters(0)\maxx=0
+        clusters(0)\miny=0
+        clusters(0)\maxy=ny
+        clusters(0)\minz=0
+        clusters(0)\maxz=nz
+      Case 3
+        clusters(0)\particles(0)\nr_points=(nx+1)*(ny+1)*2
+        ReDim clusters(0)\particles(0)\points.coordinates(2*(nx+1)*(ny+1)-2)
+        For i=0 To nx:For j=0 To ny
+            
+            clusters(0)\particles(0)\points(i+nx*j)\x=i
+            clusters(0)\particles(0)\points(i+nx*j)\y=j 
+            clusters(0)\particles(0)\points(i+nx*j)\z=nz 
+            field(i,j,nz)=1
+            field_clusters(i,j,nz)=1
+        Next j:Next i
+        For j=0 To ny:For k=0 To nz
+            
+            clusters(0)\particles(0)\points((nx+1)*(ny+1)-1+j+ny*k)\x=0
+            clusters(0)\particles(0)\points((nx+1)*(ny+1)-1+j+ny*k)\y=j 
+            clusters(0)\particles(0)\points((nx+1)*(ny+1)-1+j+ny*k)\z=k 
+            field(0,j,k)=1
+            field_clusters(0,j,k)=1
+        Next k:Next j
+        clusters(0)\particles(0)\minx=0
+        clusters(0)\particles(0)\maxx=nx
+        clusters(0)\particles(0)\miny=0
+        clusters(0)\particles(0)\maxy=ny
+        clusters(0)\particles(0)\minz=0
+        clusters(0)\particles(0)\maxz=nz
+        clusters(0)\nr_particles=1
+        clusters(0)\diameter=dx*nx
+        clusters(0)\particles(0)\id=1
+        clusters(0)\fractal_dim=3
+        clusters(0)\mass=(nx+1)*(ny+1)*2
+        clusters(0)\minx=0
+        clusters(0)\maxx=nx
+        clusters(0)\miny=0
+        clusters(0)\maxy=ny
+        clusters(0)\minz=n0
+        clusters(0)\maxz=nz
+      Case 4
+        clusters(0)\particles(0)\nr_points=(nx+1)*(ny+1)*3
+        ReDim clusters(0)\particles(0)\points.coordinates(3*(nx+1)*(ny+1)-3)
+        For i=0 To nx:For j=0 To ny
+            
+            clusters(0)\particles(0)\points(i+nx*j)\x=i
+            clusters(0)\particles(0)\points(i+nx*j)\y=j 
+            clusters(0)\particles(0)\points(i+nx*j)\z=nz 
+            field(i,j,nz)=1
+            field_clusters(i,j,nz)=1
+        Next j:Next i
+        For j=0 To ny:For k=0 To nz
+            
+            clusters(0)\particles(0)\points((nx+1)*(ny+1)-1+j+ny*k)\x=0
+            clusters(0)\particles(0)\points((nx+1)*(ny+1)-1+j+ny*k)\y=j 
+            clusters(0)\particles(0)\points((nx+1)*(ny+1)-1+j+ny*k)\z=k 
+            field(0,j,k)=1
+            field_clusters(0,j,k)=1
+        Next k:Next j
+        
+        For i=0 To nx:For k=0 To nz
+            
+            clusters(0)\particles(0)\points((nx+1)*(ny+1)+(ny+1)*(nz+1)-2+i+ny*k)\x=i
+            clusters(0)\particles(0)\points((nx+1)*(ny+1)+(ny+1)*(nz+1)-2+i+ny*k)\y=0 
+            clusters(0)\particles(0)\points((nx+1)*(ny+1)+(ny+1)*(nz+1)-2+i+ny*k)\z=k 
+            field(i,0,k)=1
+            field_clusters(i,0,k)=1
+        Next k:Next i
+        
+        clusters(0)\particles(0)\minx=0
+        clusters(0)\particles(0)\maxx=nx
+        clusters(0)\particles(0)\miny=0
+        clusters(0)\particles(0)\maxy=ny
+        clusters(0)\particles(0)\minz=0
+        clusters(0)\particles(0)\maxz=nz
+        clusters(0)\nr_particles=1
+        clusters(0)\diameter=dx*nx
+        clusters(0)\particles(0)\id=1
+        clusters(0)\fractal_dim=3
+        clusters(0)\mass=(nx+1)*(ny+1)*3
+        clusters(0)\minx=0
+        clusters(0)\maxx=nx
+        clusters(0)\miny=0
+        clusters(0)\maxy=ny
+        clusters(0)\minz=n0
+        clusters(0)\maxz=nz
+        
+    EndSelect
+  EndIf 
+  
+  temp.cluster
+  ;temp1.cluster
+  
+  Select mode_fraction
+    Case 1   
+      nr_il=plate_nr
+      nr_gt=rod_nr
+      nr_qz=sphere_nr
+    Case 2
+      vol=(nx+1)*(ny+1)*(nz+1)
+      nr_qz=sphere_vol*vol/sphere\mass
+      nr_gt=rod_vol*vol/rod\mass
+      nr_il=plate_vol*vol/plate\mass 
+  EndSelect
+  
+  For i=1 To nr_qz
+    ; Dim temp\particles\points.coordinates(size_sphere)
+    count=0
+    Repeat
+      count+1
+      CopyStructure(@sphere,@temp\particles(0),particle)
+      temp\diameter=sphere\diameter
+      temp\mass=sphere\mass
+      temp\nr_particles=1
+      temp\maxx=sphere\maxx
+      temp\maxy=sphere\maxy
+      temp\maxz=sphere\maxz
+      temp\minx=sphere\minx
+      temp\miny=sphere\miny
+      temp\minz=sphere\minz
+      randx=Random(nx)
+      randy=Random(ny)
+      randz=Random(nz)
+      For j=0 To ArraySize(temp\particles(0)\points());Each temp\particles()\points()
+        temp\particles(0)\points(j)\x+randx
+        temp\particles(0)\points(j)\y+randy
+        temp\particles(0)\points(j)\z+randz
+      Next  
+      temp\minx+randx
+      temp\maxx+randx
+      temp\miny+randy
+      temp\maxy+randy
+      temp\minz+randz
+      temp\maxz+randz
+      temp\particles(0)\minx=temp\minx
+      temp\particles(0)\maxx=temp\maxx
+      temp\particles(0)\miny=temp\miny
+      temp\particles(0)\maxy=temp\maxy
+      temp\particles(0)\minz=temp\minz
+      temp\particles(0)\maxz=temp\maxz
+      
+      rotate_cluster(@temp,Random(6));Random(6)
+      If count=200:MessageRequester("Warning","Could not place particles"+Chr(13)+Chr(10)+"Try to reduce amount"):End:EndIf
+    Until Not check_collision(@temp) 
+    nr_clusters+1
+    temp\hydrodyn=2*sphere_gyration*(1-1/3)*Sqr(2/3+1)
+    temp\diff=k_boltz*temperature/(6*#PI*0.001*temp\hydrodyn)   ;Hess hydrodynmaic behavior of colloids
+    ReDim clusters.cluster(nr_clusters) 
+    CopyStructure(@temp,@clusters(nr_clusters),cluster)
+    clusters(nr_clusters)\fractal_dim=3
+    For j=0 To ArraySize(temp\particles(0)\points())
+      field(temp\particles(0)\points(j)\x,temp\particles(0)\points(j)\y,temp\particles(0)\points(j)\z)=1
+      field_clusters(temp\particles(0)\points(j)\x,temp\particles(0)\points(j)\y,temp\particles(0)\points(j)\z)=nr_clusters+1
+    Next j  
+  Next i
+  
+  For i=1 To nr_gt 
+    count=0
+    Repeat
+      count+1
+      CopyStructure(@rod,@temp\particles(),particle)
+      temp\diameter=rod\diameter
+      temp\mass=rod\mass
+      temp\nr_particles=1
+      temp\maxx=rod\maxx
+      temp\maxy=rod\maxy
+      temp\maxz=rod\maxz
+      temp\minx=rod\minx
+      temp\miny=rod\miny
+      temp\minz=rod\minz
+      randx=Random(nx)
+      randy=Random(ny)
+      randz=Random(nz)
+      For j=0 To ArraySize(temp\particles(0)\points())
+        temp\particles(0)\points(j)\x+randx
+        temp\particles(0)\points(j)\y+randy
+        temp\particles(0)\points(j)\z+randz
+      Next   
+      
+      temp\minx+randx
+      temp\maxx+randx
+      temp\miny+randy
+      temp\maxy+randy
+      temp\minz+randz
+      temp\maxz+randz
+      temp\particles(0)\minx=temp\minx
+      temp\particles(0)\maxx=temp\maxx
+      temp\particles(0)\miny=temp\miny
+      temp\particles(0)\maxy=temp\maxy
+      temp\particles(0)\minz=temp\minz
+      temp\particles(0)\maxz=temp\maxz
+      rotate_cluster(@temp,Random(6));Random(6)
+      
+      If count=200:MessageRequester("Warning","Could not place particles"+Chr(13)+Chr(10)+"Try to reduce amount"):End:EndIf
+    Until Not check_collision(@temp) 
+    nr_clusters+1
+    temp\hydrodyn=2*rod_gyration*(1-1/3)*Sqr(2/3+1)
+    temp\diff=k_boltz*temperature/(6*#PI*0.001*temp\hydrodyn)
+    ReDim clusters.cluster(nr_clusters) 
+    CopyStructure(@temp,@clusters(nr_clusters),cluster)
+    clusters(nr_clusters)\fractal_dim=3
+    For j=0 To ArraySize(temp\particles(0)\points())
+      field(temp\particles(0)\points(j)\x,temp\particles(0)\points(j)\y,temp\particles(0)\points(j)\z)=2
+      field_clusters(temp\particles(0)\points(j)\x,temp\particles(0)\points(j)\y,temp\particles(0)\points(j)\z)=nr_clusters+1
+    Next j
+  Next i 
+  
+  For i=1 To nr_il
+    count=0
+    Repeat
+      count+1
+      CopyStructure(@plate,@temp\particles(),particle)
+      temp\diameter=plate\diameter
+      temp\mass=plate\mass
+      temp\nr_particles=1
+      temp\maxx=plate\maxx
+      temp\maxy=plate\maxy
+      temp\maxz=plate\maxz
+      temp\minx=plate\minx
+      temp\miny=plate\miny
+      temp\minz=plate\minz
+      randx=Random(nx)
+      randy=Random(ny)
+      randz=Random(nz)
+      For j=0 To ArraySize(temp\particles(0)\points())
+        temp\particles(0)\points(j)\x+randx
+        temp\particles(0)\points(j)\y+randy
+        temp\particles(0)\points(j)\z+randz
+      Next 
+      temp\minx+randx
+      temp\maxx+randx
+      temp\miny+randy
+      temp\maxy+randy
+      temp\minz+randz
+      temp\maxz+randz
+      temp\particles(0)\minx=temp\minx
+      temp\particles(0)\maxx=temp\maxx
+      temp\particles(0)\miny=temp\miny
+      temp\particles(0)\maxy=temp\maxy
+      temp\particles(0)\minz=temp\minz
+      temp\particles(0)\maxz=temp\maxz
+      rotate_cluster(@temp,Random(6));Random(6)
+      If count=200:MessageRequester("Warning","Could not place particles"+Chr(13)+Chr(10)+"Try to reduce amount"):End:EndIf
+    Until Not check_collision(@temp)      
+    nr_clusters+1
+    temp\hydrodyn=2*plate_gyration*(1-1/3)*Sqr(2/3+1)
+    temp\diff=k_boltz*temperature/(6*#PI*0.001*temp\hydrodyn)
+    ReDim clusters.cluster(nr_clusters) 
+    CopyStructure(@temp,@clusters(nr_clusters),cluster)
+    clusters(nr_clusters)\fractal_dim=3
+    
+    For j=0 To ArraySize(temp\particles(0)\points())
+      field(temp\particles(0)\points(j)\x,temp\particles(0)\points(j)\y,temp\particles(0)\points(j)\z)=3
+      field_clusters(temp\particles(0)\points(j)\x,temp\particles(0)\points(j)\y,temp\particles(0)\points(j)\z)=nr_clusters+1
+    Next j
+  Next i    
+  
+  
+EndProcedure  
+
+;The following functions are used for DLVO calculations, details are found in the correponding manuscript
+
+Procedure.d gamma(psi.d)
+  temp.d=Exp(e_charge*psi/(2*k_boltz*temperature))
+  temp=(temp-1)/(temp+1)
+  ProcedureReturn temp
+EndProcedure  
+
+Procedure.d kappa(conc.d)
+
+  temp.d=Sqr(1000*conc*avogadro*2*e_charge*e_charge/(e_rel*e_zero*k_boltz*temperature))
+  
+  ProcedureReturn temp 
+  
+EndProcedure  
+
+Procedure.d ve_ss(r1.d,r2.d,psi1.d,psi2.d,conc.d,distance.d)
+  temp.d
+  kappa.d=kappa(conc) 
+  temp=r1*r2/(r1+r2)
+  temp=temp*128*#PI*1000*conc*avogadro*k_boltz*temperature/(kappa*kappa)
+  temp=temp*gamma(psi1)*gamma(psi2)*Exp(-kappa*distance)
+  ProcedureReturn temp
+EndProcedure
+
+Procedure.d va_ss(r1.d,r2.d,hamaker.d,distance.d)
+  
+  ;elimelech Particle Deposition & Aggregation
+  temp.d
+  temp=Log((distance*distance+2*r1*distance+2*r2*distance)/(distance*distance+2*r1*distance+2*r2*distance+4*r1*r2))
+  temp=temp+2*r1*r2/(distance*distance+2*r1*distance+2*r2*distance)+2*r1*r2/(distance*distance+2*r1*distance+2*r2*distance+4*r1*r2)
+  temp=-temp*hamaker/6
+  
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d vt_ss(r1.d,r2.d,distance.d,conc.d,psi1.d,psi2.d,ham.d)
+  
+  temp.d=ve_ss(r1,r2,psi1,psi2,conc,distance)+va_ss(r1,r2,ham,distance)
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d ve_pp(distance.d,conc.d,area.d,psi1.d,psi2.d)
+  
+  ;elimelech
+  
+  kappa.d=kappa(conc)   
+  temp.d=64000*conc*avogadro*k_boltz*temperature/kappa*gamma(psi1)*gamma(psi2)*Exp(-kappa*distance)*area
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d va_pp(area.d,thick.d,hamaker.d,distance.d)  
+  
+  ;elimelech
+  
+  result.d=-hamaker/(12*#PI)*(1/(distance*distance)+1/Pow(distance+2*thick,2)-2/Pow(distance+thick,2))*area
+  ProcedureReturn result
+  
+EndProcedure  
+
+Procedure.d vt_pp(area.d,thick.d,distance.d,conc.d,psi1.d,psi2.d,ham.d)
+
+  temp.d=ve_pp(distance,conc,area,psi1,psi2)+va_pp(area,thick,ham,distance)
+  ProcedureReturn temp
+EndProcedure  
+
+Procedure.d va_sp(r1.d,distance.d,ham.d)
+  
+  temp.d
+  temp=-ham/6*(r1/distance+r1/(distance+2*r1)+Log(distance/(distance+2*r1)))
+  
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d ve_sp(r1.d,psi1.d,psi2.d,conc.d,distance.d)
+  temp.d
+  kappa.d=kappa(conc) 
+  temp=r1*128000*#PI*conc*avogadro*k_boltz*temperature/(kappa*kappa)
+  temp=temp*gamma(psi1)*gamma(psi2)*Exp(-kappa*distance)
+
+  ProcedureReturn temp
+EndProcedure
+
+Procedure.d vt_sp(r1.d,distance.d,conc.d,psi1.d,psi2.d,ham.d)
+  
+  temp.d=ve_sp(r1,psi1,psi2,conc,distance)+va_sp(r1,distance,ham)
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d va_rr(length.d,ham.d,distance.d,r1.d,r2.d)
+  
+  ;Ohshima Electrical Phenomena at Interfaces and Biointerfaces: Fundamentals and ... ;parallel
+  temp.d=Sqr(r1*r2/(r1+r2))
+  temp=-temp*ham/(12*Sqr(2)*Pow(distance,3/2))*length
+  
+  ;crossed
+  ;   temp.d=-ham*Sqr(r1*r2)/(6*distance);*length
+  ProcedureReturn temp
+  ;   
+EndProcedure  
+
+Procedure.d ve_rr(length.d,r1.d,r2.d,psi1.d,psi2.d,distance.d,conc.d)
+  
+  ;Ohshima Electrical Phenomena at Interfaces and Biointerfaces: Fundamentals and ... parallal
+  kappa.d=kappa(conc)
+  temp.d=Exp(-kappa*distance)
+  temp=temp*psi1*psi2*e_zero*e_rel*Sqr(kappa)*2*Sqr(2*r1*r2*#PI/(r1+r2))*length
+  
+  ;crossed
+  ;   kappa.d=kappa(conc)
+  ;   temp.d=Exp(-kappa*distance)
+  ;   temp=4*#PI*Sqr(r1*r2)*psi1*psi2*e_zero*e_rel*temp;*length
+  
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d vt_rr(length.d,ham.d,distance.d,r1.d,r2.d,psi1.d,psi2.d,conc.d)
+  
+  temp.d=va_rr(length,ham,distance,r1,r2)+ve_rr(length,r1,r2,psi1,psi2,distance,conc)
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d va_rp(length.d,ham.d,distance.d,r1.d)
+  
+  ;Ohshima Electrical Phenomena at Interfaces and Biointerfaces: Fundamentals and ...
+  temp.d=Sqr(r1)
+  temp=-temp*ham/(12*Sqr(2)*Pow(distance,3/2))*length
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d ve_rp(length.d,r1.d,psi1.d,psi2.d,distance.d,conc.d)
+  
+  ;Ohshima Electrical Phenomena at Interfaces and Biointerfaces: Fundamentals and ...
+  kappa.d=kappa(conc)
+  temp.d=Exp(-kappa*distance)
+  temp=temp*psi1*psi2*e_zero*e_rel*Sqr(kappa)*2*Sqr(2*r1*#PI)*length
+  
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d vt_rp(length.d,ham.d,distance.d,r1.d,psi1.d,psi2.d,conc.d)
+  
+  temp.d=va_rp(length,ham,distance,r1)+ve_rp(length,r1,psi1,psi2,distance,conc)
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.s get_exp(value.d) ; translates a Floating Point Value into string for convenient output (0.000012 => "1.2E-5")
+  temp.s
+  If value<0
+    temp="-"+StrD(Abs(value)/Pow(10,Round(Log10(Abs(value)),#PB_Round_Down)))+"E"+Str(Round(Log10(Abs(value)),#PB_Round_Down))
+  Else
+    temp=StrD(value/Pow(10,Round(Log10(value),#PB_Round_Down)))+"E"+Str(Round(Log10(value),#PB_Round_Down))
+  EndIf
+  ProcedureReturn temp
+EndProcedure 
+
+Procedure.d energy_vs_distance_ss(distance.d)
+  
+  temp.d=vt_ss(sphere\diameter/2,sphere\diameter/2,distance,ionic_strength,sphere_zetapot,sphere_zetapot,sphere_hamaker)
+  ;   Debug temp/(k_boltz*temperature)
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d energy_vs_distance_pp(distance.d)
+  
+  temp.d=vt_pp((plate_width+1)*(plate_length+1)*dx*dx,(plate_thickness+1)*dx,distance,ionic_strength,plate_zetapot,plate_zetapot,plate_hamaker)
+  ;Debug temp/(k_boltz*temperature)
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d energy_vs_distance_sp(distance.d)
+  
+  temp.d=vt_sp(sphere\diameter/2,distance,ionic_strength,sphere_zetapot,plate_zetapot,hamakers(1,3))
+  ;Debug temp/(k_boltz*temperature)
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d energy_vs_distance_rr(distance.d)
+  
+  temp.d=vt_rr((rod_length+1)*dx,rod_hamaker,distance,(rod_diameter+1)*dx/2,(rod_diameter+1)*dx/2,rod_zetapot,rod_zetapot,ionic_strength)
+  ;Debug temp/(k_boltz*temperature)
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d energy_vs_distance_rp(distance.d)
+  
+  temp.d=vt_rp((rod_length+1)*dx,hamakers(2,3),distance,(rod_diameter+1)*dx/2,rod_zetapot,plate_zetapot,ionic_strength)
+  ;Debug temp/(k_boltz*temperature)
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d energy_vs_distance_rs_as_p(distance.d)
+  ;treating a sphere as a plate
+  temp.d=vt_rp((rod_length+1)*dx,hamakers(1,2),distance,(rod_diameter+1)*dx/2,rod_zetapot,sphere_zetapot,ionic_strength)
+  ;Debug temp/(k_boltz*temperature)
+  
+  ProcedureReturn temp
+  
+EndProcedure  
+
+Procedure.d energy_vs_distance_sr_as_p(distance.d)
+  ;treating a rod as as plate
+  temp.d=vt_sp(sphere\diameter/2,distance,ionic_strength,sphere_zetapot,rod_zetapot,hamakers(1,2))
+  ;Debug temp/(k_boltz*temperature)
+  ; Debug temp/(k_boltz*temperature)
+  ProcedureReturn temp
+  
+EndProcedure 
+
+Procedure set_interaction_energies()
+  
+  ; israelavchili
+  
+  hamakers(1,1)=sphere_hamaker
+  hamakers(2,2)=rod_hamaker
+  hamakers(3,3)=plate_hamaker
+  hamakers(1,2)=Sqr(sphere_hamaker*rod_hamaker)
+  hamakers(1,3)=Sqr(sphere_hamaker*plate_hamaker)
+  hamakers(2,3)=Sqr(rod_hamaker*plate_hamaker)
+  hamakers(2,1)=hamakers(1,2)
+  hamakers(3,1)=hamakers(1,3)
+  hamakers(3,2)=hamakers(2,3)
+  
+  ;inetraction energies between different materials based on DLVO
+  max1.d
+  max2.d
+  max3.d
+  max4.d
+  max5.d
+  max6.d
+  i1.d
+  i2.d
+  i3.d
+  i4.d
+  i5.d
+  i6.d
+  
+  For i=1 To 1000 
+    ;Debug kappa(ionic_strength)*i*Pow(10,-10)
+    ;dlvo_sphere_sphere(i)=vt(sphere\diameter,sphere\diameter,i*Pow(10,-10),ionic_strength,sphere_zetapot,sphere_zetapot,sphere_hamaker)/(k_boltz*temperature)
+    dlvo_sphere_sphere(i)=vt_ss(sphere\diameter/2,sphere\diameter/2,i*Pow(10,-10),ionic_strength,sphere_zetapot,sphere_zetapot,sphere_hamaker)/(k_boltz*temperature)
+    If max1<dlvo_sphere_sphere(i):max1=dlvo_sphere_sphere(i):i1=i*Pow(10,-10):EndIf
+    If sphere_diameter>rod_diameter   ;handle sphere as plate for large diameters
+      dlvo_sphere_rod(i)=vt_rp((rod_length+1)*dx,hamakers(1,2),i*Pow(10,-10),(rod_diameter+1)*dx/2,sphere_zetapot,rod_zetapot,ionic_strength)/(k_boltz*temperature)
+    Else         ;handle rod as plate for large diameters
+      dlvo_sphere_rod(i)=vt_sp(sphere\diameter/2,i*Pow(10,-10),ionic_strength,sphere_zetapot,rod_zetapot,hamakers(1,2))/(k_boltz*temperature)
+    EndIf 
+    If max2<dlvo_sphere_rod(i):max2=dlvo_sphere_rod(i):i2=i*Pow(10,-10):EndIf
+    dlvo_sphere_plate(i)=vt_sp(sphere\diameter/2,i*Pow(10,-10),ionic_strength,sphere_zetapot,plate_zetapot,hamakers(1,3))/(k_boltz*temperature)
+    If max3<dlvo_sphere_plate(i):max3=dlvo_sphere_plate(i):i3=i*Pow(10,-10):EndIf
+    dlvo_rod_rod(i)=vt_rr((rod_length+1)*dx,rod_hamaker,i*Pow(10,-10),(rod_diameter+1)*dx/2,(rod_diameter+1)*dx/2,rod_zetapot,rod_zetapot,ionic_strength)/(k_boltz*temperature)
+    If max4<dlvo_rod_rod(i):max4=dlvo_rod_rod(i):i4=i*Pow(10,-10):EndIf
+    dlvo_rod_plate(i)=vt_rp((rod_length+1)*dx,hamakers(2,3),i*Pow(10,-10),(rod_diameter+1)*dx/2,rod_zetapot,plate_zetapot,ionic_strength)/(k_boltz*temperature)
+    If max5<dlvo_rod_plate(i):max5=dlvo_rod_plate(i):i5=i*Pow(10,-10):EndIf
+    dlvo_plate_plate(i)=vt_pp((plate_length+1)*(plate_width+1)*dx*dx,(plate_thickness+1)*dx,i*Pow(10,-10),ionic_strength,plate_zetapot,plate_zetapot,plate_hamaker)/(k_boltz*temperature)
+    If max6<dlvo_plate_plate(i):max6=dlvo_plate_plate(i):i6=i*Pow(10,-10):EndIf
+    
+  Next i  
+  
+  ;sphere sphere
+  
+  If i1>0
+    i1=newtons_method(@energy_vs_distance_ss(),i1)
+    energies(1,1)=energy_vs_distance_ss(i1)/(k_boltz*temperature)
+  Else
+    energies(1,1)=0
+  EndIf  
+  If energies(1,1)<=0
+    chances(1,1)=1
+  Else 
+    chances(1,1)=kappa(ionic_strength)*(sphere\diameter)*Exp(-energies(1,1))
+  EndIf
+  ;sphere rod
+  
+  If i2>0
+    If sphere_diameter>rod_diameter 
+      i2=newtons_method(@energy_vs_distance_rs_as_p(),i2)
+      energies(1,2)=energy_vs_distance_rs_as_p(i2)/(k_boltz*temperature)
+    Else
+      i2=newtons_method(@energy_vs_distance_sr_as_p(),i2)
+      energies(1,2)=energy_vs_distance_sr_as_p(i2)/(k_boltz*temperature)
+    EndIf  
+  Else
+    energies(1,2)=0
+  EndIf 
+  If energies(1,2)<=0
+    chances(1,2)=1
+  Else  
+    chances(1,2)=kappa(ionic_strength)*((rod_diameter+1)*dx/2+sphere\diameter/2)*Exp(-energies(1,2))
+  EndIf  
+  energies(2,1)=energies(1,2)
+  chances(2,1)=chances(1,2)
+  
+  ;sphere plate
+  
+  If i3>0
+    i3=newtons_method(@energy_vs_distance_sp(),i3)
+    energies(1,3)=energy_vs_distance_sp(i3)/(k_boltz*temperature)
+  Else
+    energies(1,3)=0
+  EndIf  
+  If energies(1,3)<=0
+    chances(1,3)=1  
+  Else  
+    chances(1,3)=kappa(ionic_strength)*((plate_thickness+1)*dx/2+sphere\diameter/2)*Exp(-energies(1,3))
+  EndIf  
+    
+  energies(3,1)=energies(1,3)
+  chances(3,1)=chances(1,3)
+  
+  ;rod rod
+  
+  If i4>0
+    i4=newtons_method(@energy_vs_distance_rr(),i4)
+    energies(2,2)=energy_vs_distance_rr(i4)/(k_boltz*temperature)
+  Else
+    energies(2,2)=0
+  EndIf  
+  If energies(2,2)<=0
+    chances(2,2)=1
+  Else  
+    chances(2,2)=kappa(ionic_strength)*((rod_diameter+1)*dx)*Exp(-energies(2,2))
+  EndIf
+  
+  ;rod plate
+  
+  If i5>0
+    i5=newtons_method(@energy_vs_distance_rp(),i5)
+    energies(2,3)=energy_vs_distance_rp(i5)/(k_boltz*temperature)
+  Else
+    energies(2,3)=0
+  EndIf
+  If energies(2,3)<=0
+    chances(2,3)=1  
+  Else  
+    chances(2,3)=kappa(ionic_strength)*((rod_diameter+1)*dx/2+(plate_thickness+1)*dx/2)*Exp(-energies(2,3))
+  EndIf
+  
+  energies(3,2)=energies(2,3)
+  chances(3,2)=chances(2,3)
+  
+  ;plate plate
+  
+  If i6>0
+    i6=newtons_method(@energy_vs_distance_pp(),i6)
+    energies(3,3)=energy_vs_distance_pp(i6)/(k_boltz*temperature)
+  Else
+    energies(3,3)=0
+  EndIf
+  If energies(3,3)<=0
+    chances(3,3)=1
+  Else  
+    chances(3,3)=kappa(ionic_strength)*((plate_thickness+1)*dx)*Exp(-energies(3,3))
+  EndIf
+  
+    StartDrawing(ImageOutput(im_DLVO))
+  FrontColor(RGB(0,0,0))
+  BackColor(RGB(255,255,255))
+  DrawText(1,1,"DLVO Total Interaction Energies")
+  scalex.d=1;200/200
+  
+  max.d=0
+  For i=0 To 999
+    If dlvo_sphere_sphere(i)>max:max=dlvo_sphere_sphere(i):EndIf
+    If dlvo_sphere_rod(i)>max:max=dlvo_sphere_rod(i):EndIf
+    If dlvo_sphere_plate(i)>max:max=dlvo_sphere_plate(i):EndIf
+    If dlvo_rod_rod(i)>max:max=dlvo_rod_rod(i):EndIf
+    If dlvo_rod_plate(i)>max:max=dlvo_rod_plate(i):EndIf
+    If dlvo_plate_plate(i)>max:max=dlvo_plate_plate(i):EndIf
+  Next i  
+  scaley.d=100/(max+10)
+  
+  LineXY(101,20,101,100,RGB(150,150,150))
+  LineXY(101,100,301,100,RGB(150,150,150))
+  LineXY(101,140,101,220,RGB(150,150,150))
+  LineXY(101,220,301,220,RGB(150,150,150))
+  LineXY(101,260,101,340,RGB(150,150,150))
+  LineXY(101,340,301,340,RGB(150,150,150))
+  LineXY(101,380,101,460,RGB(150,150,150))
+  LineXY(101,460,301,460,RGB(150,150,150))
+  LineXY(101,500,101,580,RGB(150,150,150))
+  LineXY(101,580,301,580,RGB(150,150,150))
+  LineXY(101,620,101,700,RGB(150,150,150))
+  LineXY(101,700,301,700,RGB(150,150,150))
+  
+  If i1>0:LineXY(i1*scalex*Pow(10,10)+101,20,i1*scalex*Pow(10,10)+101,100,RGB(200,0,0)):EndIf
+  If i2>0:LineXY(i2*scalex*Pow(10,10)+101,140,i2*scalex*Pow(10,10)+101,220,RGB(200,0,0)):EndIf
+  If i3>0:LineXY(i3*scalex*Pow(10,10)+101,260,i3*scalex*Pow(10,10)+101,340,RGB(200,0,0)):EndIf
+  If i4>0:LineXY(i4*scalex*Pow(10,10)+101,380,i4*scalex*Pow(10,10)+101,460,RGB(200,0,0)):EndIf
+  If i5>0:LineXY(i5*scalex*Pow(10,10)+101,500,i5*scalex*Pow(10,10)+101,580,RGB(200,0,0)):EndIf
+  If i6>0:LineXY(i6*scalex*Pow(10,10)+101,620,i6*scalex*Pow(10,10)+101,700,RGB(200,0,0)):EndIf
+  
+  DrawText(151,80,StrD(energies(1,1),2)+" k_B*T; Log10(alpha)="+StrD(Log10(chances(1,1)),2))
+  DrawText(151,200,StrD(energies(1,2),2)+" k_B*T; Log10(alpha)="+StrD(Log10(chances(1,2)),2))
+  DrawText(151,320,StrD(energies(1,3),2)+" k_B*T; Log10(alpha)="+StrD(Log10(chances(1,3)),2))
+  DrawText(151,440,StrD(energies(2,2),2)+" k_B*T; Log10(alpha)="+StrD(Log10(chances(2,2)),2))
+  DrawText(151,560,StrD(energies(2,3),2)+" k_B*T; Log10(alpha)="+StrD(Log10(chances(2,3)),2))
+  DrawText(151,680,StrD(energies(3,3),2)+" k_B*T; Log10(alpha)="+StrD(Log10(chances(3,3)),2))
+  
+  For i=1 To 199
+    If dlvo_sphere_sphere(i)>=-10:LineXY(i*scalex+101,100-dlvo_sphere_sphere(i)*scaley,(i+1)*scalex+101,100-dlvo_sphere_sphere(i+1)*scaley,RGB(0,0,0)):EndIf
+    If dlvo_sphere_rod(i)>=-10:LineXY(i*scalex+101,220-dlvo_sphere_rod(i)*scaley,(i+1)*scalex+101,220-dlvo_sphere_rod(i+1)*scaley,RGB(0,0,0)):EndIf
+    If dlvo_sphere_plate(i)>=-10:LineXY(i*scalex+101,340-dlvo_sphere_plate(i)*scaley,(i+1)*scalex+101,340-dlvo_sphere_plate(i+1)*scaley,RGB(0,0,0)):EndIf
+    If dlvo_rod_rod(i)>=-10:LineXY(i*scalex+101,460-dlvo_rod_rod(i)*scaley,(i+1)*scalex+101,460-dlvo_rod_rod(i+1)*scaley,RGB(0,0,0)):EndIf
+    If dlvo_rod_plate(i)>=-10:LineXY(i*scalex+101,580-dlvo_rod_plate(i)*scaley,(i+1)*scalex+101,580-dlvo_rod_plate(i+1)*scaley,RGB(0,0,0)):EndIf
+    If dlvo_plate_plate(i)>=-10:LineXY(i*scalex+101,700-dlvo_plate_plate(i)*scaley,(i+1)*scalex+101,700-dlvo_plate_plate(i+1)*scaley,RGB(0,0,0)):EndIf
+    If i%20=0
+      Plot(i*scalex+101,101,RGB(150,150,150))
+      DrawText(i*scalex+96,102,Str(i/10))
+      Plot(i*scalex+101,221,RGB(150,150,150))
+      DrawText(i*scalex+96,222,Str(i/10))
+      Plot(i*scalex+101,341,RGB(150,150,150))
+      DrawText(i*scalex+96,342,Str(i/10))
+      Plot(i*scalex+101,461,RGB(150,150,150))
+      DrawText(i*scalex+96,462,Str(i/10))
+      Plot(i*scalex+101,581,RGB(150,150,150))
+      DrawText(i*scalex+96,582,Str(i/10))
+      Plot(i*scalex+101,701,RGB(150,150,150))
+      DrawText(i*scalex+96,702,Str(i/10))
+    EndIf  
+  Next i
+  
+  DrawText(1,80,"Sphere/Sphere")
+  DrawText(1,200,"Sphere/Rod")
+  DrawText(1,320,"Sphere/Plate")
+  DrawText(1,440,"Rod/Rod")
+  DrawText(1,560,"Rod/Plate")
+  DrawText(1,680,"Plate/Plate")
+  
+  StopDrawing()
+  
+EndProcedure  
+
+Procedure.l color(type.i) ;assigns each mineral type a certain color
+  temp.l
+  
+  Select type
+    Case 1
+      temp=RGB(200,50,50)
+    Case 2
+      temp=RGB(150,150,150)
+    Case 3
+      temp=RGB(200,200,200)
+  EndSelect  
+  
+  ProcedureReturn temp
+EndProcedure  
+
+Procedure draw() ;includes everything that is drawn on screen
+  
+  sizex.i=nx*scale_x+scale_z*nz
+  sizey.i=scale_y*ny+scale_z*2*nz
+  StartDrawing(ImageOutput(im_aggregate))
+  Box(0,0,102+sizex,301+sizey,RGB(255,255,255))
+  drawstuff=1
+  If drawstuff
+    If mode=1 
+      For i=0 To ArraySize(clusters(0)\particles())
+        
+        For j=0 To ArraySize(clusters(0)\particles(i)\points())
+          gray1=clusters(0)\particles(i)\points(j)\z*128/nz
+          gray2=gray1
+          gray3=gray1
+          If clusters(0)\particles(i)\id=2
+            gray2/2
+            gray3/2
+          EndIf
+          If i=0 :gray1=200:gray2=200:gray3=200:EndIf
+          Plot(100+scale_x*clusters(0)\particles(i)\points(j)\x+scale_z*clusters(0)\particles(i)\points(j)\z,100+scale_y*(ny-clusters(0)\particles(i)\points(j)\y)-scale_z*clusters(0)\particles(i)\points(j)\z,RGB(gray1,gray2,gray3))
+          ;Plot(100+clusters()\particles()\points()\x,100+ny-clusters()\particles()\points()\y,RGB(gray,gray,gray))
+        Next   
+      Next  
+      
+    Else  
+      
+      For i=0 To nr_clusters
+        For j=0 To ArraySize(clusters(i)\particles())
+          For k=0 To ArraySize(clusters(i)\particles(j)\points())
+            gray1=clusters(i)\particles(j)\points(k)\z*128/(nz+1)
+            gray2=gray1
+            gray3=gray1
+            If clusters(i)\particles(j)\id=2
+              gray2/2
+              gray3/2
+            EndIf
+            Plot(100+scale_x*clusters(i)\particles(j)\points(k)\x+scale_z*clusters(i)\particles(j)\points(k)\z,100+scale_z*nz+scale_y*(ny-clusters(i)\particles(j)\points(k)\y)-scale_z*clusters(i)\particles(j)\points(k)\z,RGB(gray1,gray2,gray3))
+            ;Plot(100+clusters()\particles()\points()\x,100+ny-clusters()\particles()\points()\y,RGB(gray,gray,gray))
+          Next   
+        Next  
+      Next   
+    EndIf
+  EndIf
+  ; For i=0 To nx:For j=0 To ny: For k=0 To nz
+  ;       If field_clusters(i,j,k) :Plot(100+scale_x*i+scale_z*k,100+scale_z*nz+scale_y*(ny-j)-scale_z*k,RGB(255,0,0)):EndIf
+  ;       Next k:Next j:Next i
+  StopDrawing()
+  
+  ClearScreen(RGB(255,255,255))
+  StartDrawing(ScreenOutput())
+  FrontColor(RGB(0,0,0))
+  BackColor(RGB(255,255,255))
+  DrawImage(ImageID(im_aggregate),0,0)
+  DrawImage(ImageID(im_DLVO),sizex+350,1)
+  If sediment:DrawText(10,10,"Sedimentation allowed"):EndIf
+  DrawText(20,100+sizey,"clusters: "+Str(nr_clusters+1))
+  DrawText(20,120+sizey,"modeled realtime: "+StrD(time,5)+" s")
+  DrawText(20,140+sizey,"calculation step: "+Str(elapsedtime)+" ms")
+  DrawText(20,160+sizey,"largest cluster ("+Str(nr_largest_cluster)+"): "+Str(largest_cluster))
+  DrawText(20,250+sizey,"mass distribution")
+  scalex.d
+  scaley.d
+  temp.d
+  
+  For i=0 To ArraySize(masses())
+    If masses(i)\amount>temp:temp=masses(i)\amount:EndIf
+  Next i  
+  If Not temp=0:scaley=100/temp:EndIf
+  If Not masses(ArraySize(masses()))\class-masses(0)\class=0:scalex=200/(masses(ArraySize(masses()))\class-masses(0)\class):EndIf
+  
+  For i=0 To ArraySize(masses())
+    Box(200+(masses(i)\class-masses(0)\class)*scalex,300+sizey,2,-masses(i)\amount*scaley,RGB(0,0,0))
+    ;LineXY(200+masses(i)\class*scalex,300+nx+0.2*nz-masses(i)\amount*masses(i)\class*scaley,200+masses(i+1)\class*scalex,300+nx+0.2*nz-masses(i+1)\amount*masses(i+1)\class*scaley,RGB(0,0,0))    
+  Next i
+  DrawText(200,300+sizey,StrD(masses(0)\class))
+  DrawText(400,300+sizey,StrD(masses(ArraySize(masses()))\class))
+  
+  StopDrawing()
+  FlipBuffers()
+  
+EndProcedure  
+
+Procedure open_parameters_window() ;Initialization of parameters window
+  
+  OpenPreferences(GetCurrentDirectory()+"init.dat")
+  
+  nx=ReadPreferenceInteger("DLA_nx",500)
+  ny=ReadPreferenceInteger("DLA_ny",500)
+  nz=ReadPreferenceInteger("DLA_nz",500)
+  mode_dla=1
+  mode=ReadPreferenceInteger("DLA_mode",2)
+  mode_fraction=ReadPreferenceInteger("DLA_mode_fraction",1)
+  sphere_diameter=ReadPreferenceInteger("DLA_sphere_diameter",9)
+  rod_diameter=ReadPreferenceInteger("DLA_rod_diameter",0)
+  rod_length=ReadPreferenceInteger("DLA_rod_length",5)
+  plate_thickness=ReadPreferenceInteger("DLA_plate_thickness",0)
+  plate_length=ReadPreferenceInteger("DLA_plate_length",5)
+  plate_width=ReadPreferenceInteger("DLA_plate_width",3)
+  sphere_nr=ReadPreferenceInteger("DLA_sphere_nr",100)
+  plate_nr=ReadPreferenceInteger("DLA_plate_nr",0)
+  rod_nr=ReadPreferenceInteger("DLA_rod_nr",10000)
+  sphere_vol=ReadPreferenceDouble("DLA_sphere_vol",0)
+  plate_vol=ReadPreferenceDouble("DLA_plate_vol",0)
+  rod_vol=ReadPreferenceDouble("DLA_rod_vol",0)
+  sphere_hamaker=ReadPreferenceDouble("DLA_sphere_hamaker",1.02E-20)
+  plate_hamaker=ReadPreferenceDouble("DLA_plate_hamaker",2.5E-20)
+  rod_hamaker=ReadPreferenceDouble("DLA_rod_hamaker",2.29E-20)
+  sphere_zetapot=ReadPreferenceDouble("DLA_sphere_zetapot",0.013)
+  plate_zetapot=ReadPreferenceDouble("DLA_plate_zetapot",0.012)
+  rod_zetapot=ReadPreferenceDouble("DLA_rod_zetapot",-0.012)
+  temperature=ReadPreferenceDouble("DLA_temperature",298)
+  ionic_strength=ReadPreferenceDouble("DLA_ionic_strength",0.001)
+  dx=ReadPreferenceDouble("DLA_dx",0.0000001)  
+  sediment=ReadPreferenceInteger("DLA_sediment",0)
+  
+  ClosePreferences()
+  
+  OpenWindow(#Win_Para,10,10,600,600,"Parameters")
+  
+  FrameGadget(#Frame_Grid,10,10,400,110,"Grid and Aggregation Model")
+  
+  OptionGadget(#Radio_DLA,30,90,100,20,"fixed nucleus")
+  OptionGadget(#Radio_CCA,130,90,50,20,"CCA")
+ ; OptionGadget(#Radio_DLACCA,200,90,120,20,"fixed nucleus + CCA")
+  SetGadgetState(#Radio_DLA+mode-1,1)
+  TextGadget(#Text_nx,30,30,20,20,"nx")
+  SpinGadget(#Spin_nx,50,30,80,20,0,10000,#PB_Spin_Numeric)
+  SetGadgetState(#Spin_nx,nx)
+  TextGadget(#Text_ny,30,50,20,20,"ny")
+  SpinGadget(#Spin_ny,50,50,80,20,0,10000,#PB_Spin_Numeric)
+  SetGadgetState(#Spin_ny,ny)
+  TextGadget(#Text_nz,30,70,20,20,"nz")
+  SpinGadget(#Spin_nz,50,70,80,20,0,10000,#PB_Spin_Numeric)
+  SetGadgetState(#Spin_nz,nz)
+  TextGadget(#Text_dx,200,30,40,20,"dx [µm]")
+  StringGadget(#String_dx,240,30,80,20,StrD(dx*1000000))
+;   FrameGadget(#Frame_nucleus,230,55,150,60,"DLA Nucleus")
+;   OptionGadget(#Radio_DLA_Point,250,70,50,20,"Point")
+;   OptionGadget(#Radio_DLA_Face,250,90,50,20,"Face")
+;   OptionGadget(#Radio_DLA_Edge,320,70,50,20,"Edge")
+;   OptionGadget(#Radio_DLA_Corner,320,90,50,20,"Corner")
+;   SetGadgetState(#Radio_DLA_Point+mode_dla-1,1)
+; ;   
+;   CheckBoxGadget(#Checkbox_sediment,430,30,110,20,"allow sedimentation")
+;   SetGadgetState(#Checkbox_sediment,sediment)
+;   
+  FrameGadget(#Frame_geometry,10,120,300,160,"Geometry in units of dx")
+  FrameGadget(#Frame_Fractions,310,120,240,140,"Fractions (absolute numbers or relative volumes)")
+  TextGadget(#Text_Diameter,50,140,80,20,"Diameter")
+  OptionGadget(#Radio_numbers,360,140,80,20,"Numbers")
+  OptionGadget(#Radio_volumes,440,140,80,20,"Vol. Fraction")
+  SetGadgetState(#Radio_numbers+mode_fraction-1,1)
+  TextGadget(#Text_Qz,15,160,40,20,"Sphere")
+  TextGadget(#Text_rod_length,50,180,50,20,"Length")
+  TextGadget(#Text_rod_diameter,130,180,50,20,"Diameter")
+  TextGadget(#Text_Gt,15,200,40,20,"Rod")
+  TextGadget(#Text_Length,50,220,50,20,"Length")
+  TextGadget(#Text_Width,130,220,50,20,"Width")
+  TextGadget(#Text_Thickness,210,220,50,20,"Thickness")
+  TextGadget(#Text_Il,15,240,40,20,"Plate")
+  TextGadget(#Text_sphere_nr,315,160,40,20,"Sphere")
+  TextGadget(#Text_rod_nr,315,180,40,20,"Rod")
+  TextGadget(#Text_plate_nr,315,200,40,20,"Plate")
+  SpinGadget(#Spin_sphere_diameter,50,160,80,20,0,1000,#PB_Spin_Numeric)
+  SetGadgetState(#Spin_sphere_diameter,sphere_diameter+1)
+  SpinGadget(#Spin_sphere_nr,360,160,80,20,0,100000,#PB_Spin_Numeric)
+  SetGadgetState(#Spin_sphere_nr,sphere_nr)
+  StringGadget(#String_sphere_volfrac,440,160,80,20,StrD(sphere_vol))
+  SpinGadget(#Spin_rod_length,50,200,80,20,0,1000,#PB_Spin_Numeric)
+  SetGadgetState(#Spin_rod_length,rod_length+1)
+  SpinGadget(#Spin_rod_diameter,130,200,80,20,0,1000,#PB_Spin_Numeric)
+  SetGadgetState(#Spin_rod_diameter,rod_diameter+1)
+  SpinGadget(#Spin_rod_nr,360,180,80,20,0,100000,#PB_Spin_Numeric)
+  SetGadgetState(#Spin_rod_nr,rod_nr)
+  StringGadget(#String_rod_volfrac,440,180,80,20,StrD(rod_vol))
+  SpinGadget(#Spin_plate_length,50,240,80,20,0,1000,#PB_Spin_Numeric)
+  SetGadgetState(#Spin_plate_length,plate_length+1)
+  SpinGadget(#Spin_plate_width,130,240,80,20,0,1000,#PB_Spin_Numeric)
+  SetGadgetState(#Spin_plate_width,plate_width+1)
+  SpinGadget(#Spin_plate_thickness,210,240,80,20,0,1000,#PB_Spin_Numeric)
+  SetGadgetState(#Spin_plate_thickness,plate_thickness+1)  
+  SpinGadget(#Spin_plate_nr,360,200,80,20,0,100000,#PB_Spin_Numeric)
+  SetGadgetState(#Spin_plate_nr,plate_nr)
+  StringGadget(#String_plate_volfrac,440,200,80,20,StrD(plate_vol))
+  
+  FrameGadget(#Frame_DLVO_Parameters,10,280,300,200,"DLVO Parameters")
+  
+  TextGadget(#Text_hamaker,50,300,100,20,"Hamaker [10^-20 J]")
+  TextGadget(#Text_zetapot,150,300,100,20,"Zetapotential [mV]")
+  TextGadget(#Text_Qz_DLVO,15,320,40,20,"Sphere")
+  TextGadget(#Text_Gt_DLVO,15,340,40,20,"Rod")
+  TextGadget(#Text_Il_DLVO,15,360,40,20,"Plate")
+  StringGadget(#String_sphere_hamaker,50,320,100,20,StrD(sphere_hamaker/Pow(10,-20)))
+  StringGadget(#String_rod_hamaker,50,340,100,20,StrD(rod_hamaker/Pow(10,-20)))
+  StringGadget(#String_plate_hamaker,50,360,100,20,StrD(plate_hamaker/Pow(10,-20)))
+  StringGadget(#String_sphere_zetapot,150,320,100,20,StrD(sphere_zetapot*1000))
+  StringGadget(#String_rod_zetapot,150,340,100,20,StrD(rod_zetapot*1000))
+  StringGadget(#String_plate_zetapot,150,360,100,20,StrD(plate_zetapot*1000))
+  
+  TextGadget(#Text_ionic_strength,30,400,100,20,"Ionic Strength [mM]")
+  StringGadget(#String_ionic_strength,130,400,80,20,StrD(ionic_strength*1000))
+  TextGadget(#Text_Temperature,30,420,100,20,"Temperature [K]")
+  StringGadget(#String_Temperature,130,420,80,20,StrD(temperature))
+  
+  ButtonGadget(#Button_Start,10,480,80,20,"Start")
+  Repeat
+    event=WaitWindowEvent()
+  Until (event=#PB_Event_CloseWindow Or (event=#WM_KEYUP And EventwParam() = #VK_ESCAPE)) Or (EventGadget()=#Button_Start And EventType()=#PB_EventType_LeftClick)
+  
+  If event=#PB_Event_CloseWindow Or (event=#WM_KEYUP And EventwParam() = #VK_ESCAPE):End:EndIf
+  
+ ; mode_dla=GetGadgetState(#Radio_DLA_Point)+2*GetGadgetState(#Radio_DLA_Face)+3*GetGadgetState(#Radio_DLA_Edge)+4*GetGadgetState(#Radio_DLA_Corner)
+  mode=GetGadgetState(#Radio_DLA)+2*GetGadgetState(#Radio_CCA);+3*GetGadgetState(#Radio_DLACCA)
+  mode_fraction=GetGadgetState(#Radio_numbers)+2*GetGadgetState(#Radio_volumes)
+  dx=ValD(GetGadgetText(#String_dx))/1000000
+  nx=GetGadgetState(#Spin_nx)
+  ny=GetGadgetState(#Spin_ny)
+  nz=GetGadgetState(#Spin_nz)
+  sphere_diameter=GetGadgetState(#Spin_sphere_diameter)-1
+  rod_length=GetGadgetState(#Spin_rod_length)-1
+  rod_diameter=GetGadgetState(#Spin_rod_diameter)-1
+  plate_length=GetGadgetState(#Spin_plate_length)-1
+  plate_width=GetGadgetState(#Spin_plate_width)-1
+  plate_thickness=GetGadgetState(#Spin_plate_thickness)-1
+  sphere_nr=GetGadgetState(#Spin_sphere_nr)
+  rod_nr=GetGadgetState(#Spin_rod_nr)
+  plate_nr=GetGadgetState(#Spin_plate_nr)
+  sphere_vol=ValD(GetGadgetText(#String_sphere_volfrac))
+  rod_vol=ValD(GetGadgetText(#String_rod_volfrac))
+  plate_vol=ValD(GetGadgetText(#String_plate_volfrac))
+  sphere_hamaker=ValD(GetGadgetText(#String_sphere_hamaker))*Pow(10,-20)
+  rod_hamaker=ValD(GetGadgetText(#String_rod_hamaker))*Pow(10,-20)
+  plate_hamaker=ValD(GetGadgetText(#String_plate_hamaker))*Pow(10,-20)
+  sphere_zetapot=ValD(GetGadgetText(#String_sphere_zetapot))/1000
+  rod_zetapot=ValD(GetGadgetText(#String_rod_zetapot))/1000
+  plate_zetapot=ValD(GetGadgetText(#String_plate_zetapot))/1000
+  ionic_strength=ValD(GetGadgetText(#String_ionic_strength))/1000
+  temperature=ValD(GetGadgetText(#String_Temperature))
+ 
+  
+  CloseWindow(#Win_Para)
+  
+  OpenPreferences(GetCurrentDirectory()+"init.dat")
+  WritePreferenceInteger("DLA_nx",nx)
+  WritePreferenceInteger("DLA_ny",ny)
+  WritePreferenceInteger("DLA_nz",nz)
+  WritePreferenceInteger("DLA_mode_DLA",mode_dla)
+  WritePreferenceInteger("DLA_mode",mode)
+  WritePreferenceInteger("DLA_mode_fraction",mode_fraction)
+  WritePreferenceInteger("DLA_sphere_diameter",sphere_diameter)
+  WritePreferenceInteger("DLA_rod_diameter",rod_diameter)
+  WritePreferenceInteger("DLA_rod_length",rod_length)
+  WritePreferenceInteger("DLA_plate_width",plate_width)
+  WritePreferenceInteger("DLA_plate_length",plate_length)
+  WritePreferenceInteger("DLA_plate_thickness",plate_thickness)
+  WritePreferenceInteger("DLA_sphere_nr",sphere_nr)
+  WritePreferenceInteger("DLA_plate_nr",plate_nr)
+  WritePreferenceInteger("DLA_rod_nr",rod_nr)
+  WritePreferenceDouble("DLA_sphere_vol",sphere_vol)
+  WritePreferenceDouble("DLA_plate_vol",plate_vol)
+  WritePreferenceDouble("DLA_rod_vol",rod_vol)
+  WritePreferenceDouble("DLA_dx",dx)  ;in m
+  WritePreferenceDouble("DLA_sphere_hamaker",sphere_hamaker)
+  WritePreferenceDouble("DLA_plate_hamaker",plate_hamaker)
+  WritePreferenceDouble("DLA_rod_hamaker",rod_hamaker)
+  WritePreferenceDouble("DLA_sphere_zetapot",sphere_zetapot)
+  WritePreferenceDouble("DLA_plate_zetapot",plate_zetapot)
+  WritePreferenceDouble("DLA_rod_zetapot",rod_zetapot)
+  WritePreferenceDouble("DLA_temperature",temperature)
+  WritePreferenceDouble("DLA_ionic_strength",ionic_strength)
+  WritePreferenceInteger("DLA_sediment",sediment)
+  
+  ClosePreferences()
+  
+  While nx*scale_x+scale_z*nz+300>DesktopWidth(0) Or ny*scale_y+scale_z*nz+500>DesktopHeight(0)
+    scale_x*0.8
+    scale_z*0.8
+    scale_y*0.8
+  Wend
+
+EndProcedure  
+
+InitSprite()
+InitKeyboard()
+InitMouse()
+
+open_parameters_window()
+
+sizex=nx*scale_x+scale_z*nz
+sizey=ny*scale_y+scale_z*nz
+im_aggregate=CreateImage(#PB_Any,200+sizex,400+sizey,32,RGB(255,255,255))
+im_DLVO=CreateImage(#PB_Any,400,900,32,RGB(255,255,255))
+set_mineral_shapes()
+set_interaction_energies()
+init_field()  
+OpenWindow(#Win_Plot,10,10,800+sizex,500+sizey,"Welcome to Aggregation Modeling")
+OpenWindowedScreen(WindowID(#Win_Plot),0,0,800+sizex,500+sizey)
+!fldcw[v_FPU_ControlWord]
+If mode=1
+    calculate_fractals=0
+    calculate_gyration=0
+  Else
+    calculate_fractals=1
+    calculate_gyration=1
+  EndIf
+  
+  ;;;;;;;;;;;;;;;
+  ;;;MAIN LOOP;;;
+  ;;;;;;;;;;;;;;;
+  
+Repeat  
+  event=WindowEvent()
+  ExamineKeyboard()
+
+  elapsedtime=ElapsedMilliseconds()
+  changed=0
+  
+  max.d=Pow(10,-30)
+  For i=0 To nr_clusters
+    If clusters(i)\diff>max:max=clusters(i)\diff:EndIf
+  Next i
+  timestep=2/9*dx*dx/max
+  i=-1
+  Repeat  ;loop over all clusters
+    i+1
+    If i=0 And (mode=1 Or mode=3):Continue:EndIf
+    If random_cont(1,6)<=clusters(i)\diff/max  ;roll if it moves due to diff-coeff
+                                               ;CopyStructure(@clusters(i),@movetemp,cluster)
+      For j=0 To ArraySize(clusters(i)\particles())
+        For k=0 To ArraySize(clusters(i)\particles(j)\points())
+          field(clusters(i)\particles(j)\points(k)\x,clusters(i)\particles(j)\points(k)\y,clusters(i)\particles(j)\points(k)\z)=0
+          field_clusters(clusters(i)\particles(j)\points(k)\x,clusters(i)\particles(j)\points(k)\y,clusters(i)\particles(j)\points(k)\z)=0
+        Next k  
+      Next j
+      
+      rotate_cluster(@clusters(i),Random(6))
+      
+      move_cluster(@clusters(i))
+
+      For j=0 To ArraySize(clusters(i)\particles())
+        For k=0 To ArraySize(clusters(i)\particles(j)\points())
+          field(clusters(i)\particles(j)\points(k)\x,clusters(i)\particles(j)\points(k)\y,clusters(i)\particles(j)\points(k)\z)=clusters(i)\particles(j)\id
+          field_clusters(clusters(i)\particles(j)\points(k)\x,clusters(i)\particles(j)\points(k)\y,clusters(i)\particles(j)\points(k)\z)=i+1
+        Next k  
+      Next j
+      
+      attach=check_attachment(@clusters(i),i+1)
+
+      If attach
+        For j=0 To ArraySize(clusters(i)\particles())
+          For k=0 To ArraySize(clusters(i)\particles(j)\points())
+            field_clusters(clusters(i)\particles(j)\points(k)\x,clusters(i)\particles(j)\points(k)\y,clusters(i)\particles(j)\points(k)\z)=attach
+          Next k  
+        Next j
+        merge_clusters(attach-1,i)
+        If i>=nr_clusters:Break(1):EndIf
+      EndIf      
+      
+    EndIf
+
+  Until i>=nr_clusters
+  get_histograms()
+  elapsedtime=ElapsedMilliseconds()-elapsedtime
+  time+timestep
+  drawtimer+1
+  If IsScreenActive()
+    If mode=0
+      If changed:draw():EndIf
+    Else
+      draw()
+    EndIf  
+  EndIf
+  
+Until KeyboardPushed(#PB_Key_Escape) Or event=#PB_Event_CloseWindow Or Quit = 1
+
+If MessageRequester("Info","Export largest cluster?",#PB_MessageRequester_YesNo)=#PB_MessageRequester_Yes
+  i_width.i=clusters(nr_largest_cluster)\maxx-clusters(nr_largest_cluster)\minx
+  i_height.i=clusters(nr_largest_cluster)\maxy-clusters(nr_largest_cluster)\miny
+  i_depth.i=clusters(nr_largest_cluster)\maxz-clusters(nr_largest_cluster)\minz
+  export_image.i=CreateImage(#PB_Any,i_width+1,i_height+1,32,RGB(0,0,0))
+  Dim exporter.i(i_width,i_height,i_depth)
+  For i=0 To ArraySize(clusters(nr_largest_cluster)\particles())
+    For j=0 To ArraySize(clusters(nr_largest_cluster)\particles(i)\points())
+      x=clusters(nr_largest_cluster)\particles(i)\points(j)\x-clusters(nr_largest_cluster)\minx
+      y=clusters(nr_largest_cluster)\particles(i)\points(j)\y-clusters(nr_largest_cluster)\miny
+      z=clusters(nr_largest_cluster)\particles(i)\points(j)\z-clusters(nr_largest_cluster)\minz
+      exporter(x,y,z)=clusters(nr_largest_cluster)\particles(i)\id
+    Next j  
+  Next i  
+  StartDrawing(ImageOutput(export_image))  
+  CreateDirectory(GetCurrentDirectory()+"aggregateout")
+  For k=0 To i_depth
+    Box(0,0,i_width,i_height,RGB(0,0,0))
+    For i=0 To i_width
+      For j=0 To i_height
+        Plot(i,j,exporter(i,j,k))
+      Next j
+    Next i
+    SaveImage(export_image,GetCurrentDirectory()+"aggregateout\"+Str(k)+".png", #PB_ImagePlugin_PNG )
+  Next k
+
+  StopDrawing()
+  
+EndIf  
+
+End
