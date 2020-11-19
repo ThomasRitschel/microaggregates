@@ -2557,6 +2557,15 @@ Repeat
     EndIf  
   EndIf
   
+    If KeyboardPushed(#PB_Key_E)
+    CreateFile(0,"DLVO_curves.txt")
+    WriteStringN(0,"sphere/sphere"+Chr(9)+"sphere/rod"+Chr(9)+"sphere/plate"+Chr(9)+"rod/rod"+Chr(9)+"rod/plate"+Chr(9)+"plate/plate")
+    For i=0 To 1000
+      WriteStringN(0,StrD(dlvo_sphere_sphere(i))+Chr(9)+StrD(dlvo_sphere_rod(i))+Chr(9)+StrD(dlvo_sphere_plate(i))+Chr(9)+StrD(dlvo_rod_rod(i))+Chr(9)+StrD(dlvo_rod_plate(i))+Chr(9)+StrD(dlvo_plate_plate(i)))
+    Next i
+    CloseFile(0)
+  EndIf
+  
 Until KeyboardPushed(#PB_Key_Escape) Or event=#PB_Event_CloseWindow Or Quit = 1
 
 If MessageRequester("Info","Export largest cluster?",#PB_MessageRequester_YesNo)=#PB_MessageRequester_Yes
